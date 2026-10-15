@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import socket
 import ssl
 from typing import Awaitable, Callable
 
@@ -41,6 +42,10 @@ _READ_LIMIT: int = 1 * 1024 * 1024
 # fresh speech is the right call (the user is hearing stale audio
 # anyway).
 _MAX_WRITE_BUFFER: int = 256 * 1024
+
+# An unreachable relay otherwise holds the TCP connect for minutes
+# (the kernel's SYN retries) before the backoff loop gets a turn.
+_CONNECT_TIMEOUT: float = 15.0
 
 
 class FingerprintMismatch(Exception):
@@ -77,6 +82,27 @@ def _normalize_fingerprint(value: str) -> str:
     """Strip separators and lowercase a fingerprint string for comparison."""
 
     return "".join(c for c in value.lower() if c in "0123456789abcdef")
+
+
+def _enable_keepalive(sock) -> None:
+    """Let the kernel notice a relay that vanished without closing.
+
+    After a suspend, a Wi-Fi change or a dropped NAT mapping no FIN
+    ever arrives, so readline() would wait forever and the session
+    never reconnects. Probing after 60s idle detects that in ~2 min.
+    """
+
+    if sock is None:
+        return
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        for name, value in (
+            ("TCP_KEEPIDLE", 60), ("TCP_KEEPINTVL", 15), ("TCP_KEEPCNT", 4),
+        ):
+            if hasattr(socket, name):
+                sock.setsockopt(socket.IPPROTO_TCP, getattr(socket, name), value)
+    except OSError:
+        pass
 
 
 def _peer_fingerprint(writer: asyncio.StreamWriter) -> str:
@@ -130,6 +156,12 @@ class RemoteTransport:
         # the wire can't keep up.
         self._dropped_outbound: int = 0
 
+    @property
+    def connected(self) -> bool:
+        """True while a pinned TLS session to the relay is open."""
+
+        return self._writer is not None
+
     def start(self) -> None:
         """Spawn the reconnect/read loop as an asyncio task."""
 
@@ -143,14 +175,11 @@ class RemoteTransport:
 
         if self._stop_event is not None:
             self._stop_event.set()
-        if self._writer is not None:
-            try:
-                self._writer.close()
-                await self._writer.wait_closed()
-            except Exception:  # pylint: disable=broad-except
-                pass
-            self._writer = None
         if self._task is not None:
+            # Cancel rather than wait: a connect to an unreachable relay
+            # can hang for minutes while Orca's main thread waits on us.
+            # The read loop's finally closes the writer.
+            self._task.cancel()
             try:
                 await self._task
             except asyncio.CancelledError:
@@ -237,14 +266,21 @@ class RemoteTransport:
         """One connection lifecycle: handshake, join, read until EOF."""
 
         self._on_status(f"connecting to {self._host}:{self._port}")
-        reader, writer = await asyncio.open_connection(
-            self._host, self._port,
-            ssl=_make_ssl_context(),
-            # Bigger-than-default StreamReader buffer so a legitimately
-            # large speak/braille frame doesn't trip
-            # LimitOverrunError. See _READ_LIMIT comment for sizing.
-            limit=_READ_LIMIT,
-        )
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(
+                    self._host, self._port,
+                    ssl=_make_ssl_context(),
+                    # Bigger-than-default StreamReader buffer so a
+                    # legitimately large speak/braille frame doesn't trip
+                    # LimitOverrunError. See _READ_LIMIT comment for sizing.
+                    limit=_READ_LIMIT,
+                ),
+                timeout=_CONNECT_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            raise OSError(f"no answer within {_CONNECT_TIMEOUT:.0f}s") from None
+        _enable_keepalive(writer.get_extra_info("socket"))
 
         # Fingerprint pin: refuse blank pins outright; compute the
         # actual fingerprint and either match or bail with the value

@@ -127,6 +127,7 @@ class RemoteController:
         if self.control_state == self.REMOTE:
             self.control_state = self.LOCAL
         self.transport.close()
+        self.local_machine.release_all_keys()
         if self.speech_callback:
             self.speech_callback("Disconnected")
 
@@ -176,6 +177,7 @@ class RemoteController:
 
     def _on_transport_disconnected(self):
         log.info("Transport disconnected")
+        self.local_machine.release_all_keys()
         self.connected_clients.clear()
         self._nvda_not_connected_announced = False
         if self.control_state == self.REMOTE:

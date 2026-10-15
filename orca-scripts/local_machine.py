@@ -526,6 +526,7 @@ class LocalMachine:
         self._portal_injector = None
         self._warned_no_key_backend = False
         self._warned_ydotool = False
+        self._held_keys = set()
 
     # ---- Speech ----
 
@@ -736,7 +737,23 @@ class LocalMachine:
                 key_name, vk_code, extended))
             return
         _dbg("send_key: %s %s" % ("press" if pressed else "release", key))
+        if pressed:
+            self._held_keys.add(key)
+        else:
+            self._held_keys.discard(key)
+        self._inject(key, pressed)
 
+    def release_all_keys(self):
+        """Release keys the remote pressed but never released.
+
+        Called when the link drops; xdotool keydown otherwise leaves
+        them held on this machine until someone presses them again.
+        """
+        for key in sorted(self._held_keys):
+            self._inject(key, False)
+        self._held_keys.clear()
+
+    def _inject(self, key, pressed):
         if self._is_wayland_session():
             if self._send_key_portal(key, pressed):
                 return

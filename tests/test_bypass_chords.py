@@ -197,7 +197,7 @@ class TestBypassPredicate:
     def test_no_orca_mod_held_means_no_bypass(self):
         mod = _load_remote_module()
         instance = mod.RemoteExtension.__new__(mod.RemoteExtension)
-        instance._master_orca_mod_held = 0
+        instance._master_orca_mods_down = set()
         # Even with a matching keysym + modifier, no Orca-mod held
         # means this isn't a local command chord.
         assert not instance._is_local_bypass_chord(0x72, mod._AT_SPI_MOD_CTRL)
@@ -206,7 +206,7 @@ class TestBypassPredicate:
     def test_orca_mod_plus_ctrl_chord_bypasses(self):
         mod = _load_remote_module()
         instance = mod.RemoteExtension.__new__(mod.RemoteExtension)
-        instance._master_orca_mod_held = 1
+        instance._master_orca_mods_down = {0xff63}
         for keysym in (0x72, 0x6d, 0xff55, 0xff56):  # r, m, PgUp, PgDn
             assert instance._is_local_bypass_chord(
                 keysym, mod._AT_SPI_MOD_CTRL,
@@ -215,7 +215,7 @@ class TestBypassPredicate:
     def test_orca_mod_plus_ctrl_shift_c_bypasses(self):
         mod = _load_remote_module()
         instance = mod.RemoteExtension.__new__(mod.RemoteExtension)
-        instance._master_orca_mod_held = 1
+        instance._master_orca_mods_down = {0xff63}
         modifiers = mod._AT_SPI_MOD_CTRL | mod._AT_SPI_MOD_SHIFT
         assert instance._is_local_bypass_chord(0x63, modifiers)
         assert instance._is_local_bypass_chord(0x43, modifiers)
@@ -223,7 +223,7 @@ class TestBypassPredicate:
     def test_orca_mod_plus_alt_tab_bypasses(self):
         mod = _load_remote_module()
         instance = mod.RemoteExtension.__new__(mod.RemoteExtension)
-        instance._master_orca_mod_held = 1
+        instance._master_orca_mods_down = {0xff63}
         assert instance._is_local_bypass_chord(0xff09, mod._AT_SPI_MOD_ALT)
 
     def test_non_chord_letter_does_not_bypass(self):
@@ -231,7 +231,7 @@ class TestBypassPredicate:
 
         mod = _load_remote_module()
         instance = mod.RemoteExtension.__new__(mod.RemoteExtension)
-        instance._master_orca_mod_held = 1
+        instance._master_orca_mods_down = {0xff63}
         # 'a' / 'z' aren't in the bypass list; would forward to remote.
         assert not instance._is_local_bypass_chord(0x61, mod._AT_SPI_MOD_CTRL)
         assert not instance._is_local_bypass_chord(0x7a, mod._AT_SPI_MOD_CTRL)
@@ -241,7 +241,7 @@ class TestBypassPredicate:
 
         mod = _load_remote_module()
         instance = mod.RemoteExtension.__new__(mod.RemoteExtension)
-        instance._master_orca_mod_held = 1
+        instance._master_orca_mods_down = {0xff63}
         # XK_Down = 0xff54. Not in either OWN_*_CHORD set even though
         # Insert is held; this is a remote-side NVDA command and must
         # reach the slave.
@@ -257,7 +257,7 @@ class TestBypassPredicate:
 
         mod = _load_remote_module()
         instance = mod.RemoteExtension.__new__(mod.RemoteExtension)
-        instance._master_orca_mod_held = 1
+        instance._master_orca_mods_down = {0xff63}
         # Mute keysym 'm' is in OWN_CTRL_CHORD_KEYSYMS but the check
         # requires Ctrl-bit. Without it, no bypass.
         assert not instance._is_local_bypass_chord(0x6d, 0)
@@ -266,7 +266,7 @@ class TestBypassPredicate:
     def test_clipboard_requires_shift(self):
         mod = _load_remote_module()
         instance = mod.RemoteExtension.__new__(mod.RemoteExtension)
-        instance._master_orca_mod_held = 1
+        instance._master_orca_mods_down = {0xff63}
         assert not instance._is_local_bypass_chord(0x63, mod._AT_SPI_MOD_CTRL)
         assert not instance._is_local_bypass_chord(0x63, mod._AT_SPI_MOD_SHIFT)
 
@@ -328,7 +328,7 @@ class TestOrcaModTracking:
     def test_press_increments(self):
         mod = _load_remote_module()
         instance = mod.RemoteExtension.__new__(mod.RemoteExtension)
-        instance._master_orca_mod_held = 0
+        instance._master_orca_mods_down = set()
         # Construct a minimal call-chain: only the tracking branch
         # of _on_keyboard_event runs because role / transport guards
         # short-circuit.
@@ -340,20 +340,20 @@ class TestOrcaModTracking:
             pressed=True, keycode=118, keysym=0xff63,
             modifiers=0, text="",
         )
-        assert instance._master_orca_mod_held == 1
+        assert instance._master_orca_mods_down == {0xff63}
         # Insert release.
         instance._on_keyboard_event(
             pressed=False, keycode=118, keysym=0xff63,
             modifiers=0, text="",
         )
-        assert instance._master_orca_mod_held == 0
+        assert instance._master_orca_mods_down == set()
 
     def test_release_clamped_to_zero(self):
         """Stray release without a matching press doesn't go negative."""
 
         mod = _load_remote_module()
         instance = mod.RemoteExtension.__new__(mod.RemoteExtension)
-        instance._master_orca_mod_held = 0
+        instance._master_orca_mods_down = set()
         instance._current_role = mock.Mock(return_value="client")
         instance._focus_on_remote = False
         instance._transport = None
@@ -362,25 +362,25 @@ class TestOrcaModTracking:
             pressed=False, keycode=118, keysym=0xff63,
             modifiers=0, text="",
         )
-        assert instance._master_orca_mod_held == 0
+        assert instance._master_orca_mods_down == set()
 
     def test_two_orca_mod_keys_balance(self):
         """Insert + KP_Insert held together net to 2, decrement to 0 cleanly."""
 
         mod = _load_remote_module()
         instance = mod.RemoteExtension.__new__(mod.RemoteExtension)
-        instance._master_orca_mod_held = 0
+        instance._master_orca_mods_down = set()
         instance._current_role = mock.Mock(return_value="client")
         instance._focus_on_remote = False
         instance._transport = None
         # Press both.
         instance._on_keyboard_event(True, 0, 0xff63, 0, "")  # Insert
         instance._on_keyboard_event(True, 0, 0xff9e, 0, "")  # KP_Insert
-        assert instance._master_orca_mod_held == 2
+        assert instance._master_orca_mods_down == {0xff63, 0xff9e}
         # Release both.
         instance._on_keyboard_event(False, 0, 0xff63, 0, "")
         instance._on_keyboard_event(False, 0, 0xff9e, 0, "")
-        assert instance._master_orca_mod_held == 0
+        assert instance._master_orca_mods_down == set()
 
 
 class TestOwnChordRefusalPredicate:

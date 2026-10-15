@@ -15,6 +15,7 @@ import json
 import os
 import sys
 import threading
+import time
 import types
 from typing import Any
 
@@ -80,6 +81,8 @@ _SETTINGS_FILENAME = "orca-remote-settings.json"
 _ORCA_MOD_KEYSYMS: frozenset[int] = frozenset({
     0xff63,  # XK_Insert       (desktop-layout Orca modifier)
     0xff9e,  # XK_KP_Insert    (numpad variant)
+    0xffe5,  # XK_Caps_Lock    (laptop-layout Orca modifier)
+    0xffe6,  # XK_Shift_Lock   (laptop-layout alternative)
 })
 _CTRL_KEYSYMS: frozenset[int] = frozenset({0xffe3, 0xffe4})
 _SHIFT_KEYSYMS: frozenset[int] = frozenset({0xffe1, 0xffe2})
@@ -105,7 +108,9 @@ _STICKY_KEYSYMS: frozenset[int] = frozenset({
     0xfe03,          # ISO_Level3_Shift
     0xfe04,          # ISO_Level5_Shift
     0xff63,          # Insert       (Orca mod, desktop layout)
-    0xff9e,          # KP_Insert    (Orca mod, laptop layout)
+    0xff9e,          # KP_Insert    (Orca mod, numpad variant)
+    0xffe5,          # Caps_Lock    (Orca mod, laptop layout)
+    0xffe6,          # Shift_Lock   (Orca mod, laptop layout)
 })
 
 # Keysyms that, when pressed while Orca-mod + Ctrl are held, fire one
@@ -153,6 +158,11 @@ _MASTER_GRAB_MODIFIERS: tuple[int, ...] = (
 )
 
 
+# Identical host utterances closer together than this are one Orca
+# event reported twice (focus + name change), not two utterances.
+_SPEECH_DEDUPE_SECONDS: float = 0.3
+
+
 def _settings_path() -> str:
     """Absolute path to the JSON settings file."""
 
@@ -192,14 +202,22 @@ class RemoteExtension(Extension):
         # "stop hearing them move around while I work." Toggled by
         # Insert+Ctrl+M.
         self._inbound_speech_muted: bool = False
-        # Master-only: how many Orca-modifier keys (Insert / Caps_Lock)
-        # are currently held. Counter (not bool) so two Orca-mod keys
-        # held together don't double-decrement. Read by the bypass
-        # check in _on_keyboard_event to decide whether the incoming
-        # chord is one of our local commands (which dispatch locally
-        # via Orca) versus regular typing (which gets forwarded so the
-        # remote NVDA/Orca can act on it).
-        self._master_orca_mod_held: int = 0
+        # Master-only: which Orca-modifier keys (Insert / Caps_Lock)
+        # are currently held. A set, not a counter: holding Insert
+        # autorepeats PRESS with a single RELEASE, which left a counter
+        # stuck above zero and later Ctrl+M / Ctrl+PgDn treated as
+        # local chords. Read by the bypass check in _on_keyboard_event
+        # to decide whether the incoming chord is one of our local
+        # commands (which dispatch locally via Orca) versus regular
+        # typing (which gets forwarded so the remote NVDA/Orca can act
+        # on it).
+        self._master_orca_mods_down: set[int] = set()
+        # Master-only: (vk_code, extended) pairs forwarded as PRESS and
+        # not yet RELEASE. Leaving the remote (Orca+Alt+Tab) or
+        # disconnecting stops forwarding before the user lets go of
+        # Insert and Alt, so these are released explicitly; otherwise
+        # they stay held down on the remote machine.
+        self._forwarded_keys_down: set[tuple[int, bool]] = set()
         # Host-side: keysyms we've synthesized PRESS for but not yet
         # RELEASE. If the transport drops between a press/release pair
         # the X server would otherwise believe the key is still held,
@@ -228,6 +246,7 @@ class RemoteExtension(Extension):
         # speaks. The user reported this as the master hearing
         # everything twice. Compare last-sent text and skip a repeat.
         self._last_outbound_speech: str = ""
+        self._last_outbound_speech_at: float = 0.0
         # Same idea for braille: a long-running line refresh produces
         # many braille_emitted with identical text+cursor; drop repeats.
         self._last_outbound_braille: tuple[str, int] = ("", -2)
@@ -379,9 +398,17 @@ class RemoteExtension(Extension):
         # a separate NVDA speak frame on the master, which speaks both.
         # Done here on the GLib thread so we don't race with the
         # asyncio side.
-        if text == self._last_outbound_speech:
+        # Only within a short window: a later identical utterance is
+        # real (typing "aa", arrowing over two blank lines) and must
+        # reach the master.
+        now = time.monotonic()
+        if (
+            text == self._last_outbound_speech
+            and now - self._last_outbound_speech_at < _SPEECH_DEDUPE_SECONDS
+        ):
             return
         self._last_outbound_speech = text
+        self._last_outbound_speech_at = now
 
         # NVDA Remote's speak message: {"type":"speak","sequence":[...]}
         # where sequence entries are either strings (text) or dicts
@@ -450,11 +477,9 @@ class RemoteExtension(Extension):
         # reader sees Insert/Caps_Lock in its own modifier state.
         if keysym in _ORCA_MOD_KEYSYMS:
             if pressed:
-                self._master_orca_mod_held += 1
+                self._master_orca_mods_down.add(keysym)
             else:
-                self._master_orca_mod_held = max(
-                    0, self._master_orca_mod_held - 1,
-                )
+                self._master_orca_mods_down.discard(keysym)
 
         # Cheap guards: non-forwarding sessions pay no further cost.
         if self._current_role() != ROLE_CLIENT:
@@ -477,6 +502,16 @@ class RemoteExtension(Extension):
             # Unmapped; pass through to Orca so an exotic key isn't
             # silently dropped.
             return False
+
+        key = (vk_code, extended)
+        if pressed:
+            self._forwarded_keys_down.add(key)
+        elif key in self._forwarded_keys_down:
+            self._forwarded_keys_down.discard(key)
+        else:
+            # Pressed while focused local (e.g. the Insert+Alt that
+            # entered remote mode); the remote never saw the PRESS.
+            return True
 
         self._schedule_send(
             {
@@ -502,10 +537,10 @@ class RemoteExtension(Extension):
         Modifier bits come from the AT-SPI event: Ctrl = 0x04,
         Alt = 0x08. The Orca-modifier (Insert / Caps_Lock) isn't a
         true X11 modifier bit; we track its press/release ourselves
-        in _master_orca_mod_held.
+        in _master_orca_mods_down.
         """
 
-        if self._master_orca_mod_held == 0:
+        if not self._master_orca_mods_down:
             return False
         if (
             keysym in _OWN_CTRL_SHIFT_CHORD_KEYSYMS
@@ -683,9 +718,11 @@ class RemoteExtension(Extension):
         # Explicit connect: remember the intent so the next Orca
         # restart re-dials automatically.
         self._set_auto_connect(True)
-        if self._transport is not None:
+        if self._transport is not None and self._transport.connected:
             self._say("Orca Remote already connected.")
             return True
+        # Not connected, or still retrying / parked on a fingerprint
+        # mismatch: dial again now instead of claiming success.
         # User asked to connect -- they should hear the next join.
         self._announced_join = False
         self._peer_not_connected_announced = False
@@ -745,9 +782,38 @@ class RemoteExtension(Extension):
             else:
                 self._say("Orca Remote: focused on remote machine.")
         else:
+            self._release_forwarded_keys()
             self._disable_master_grab()
             self._say("Orca Remote: focused on local machine.")
         return True
+
+    def _release_forwarded_keys(self) -> None:
+        """Send RELEASE for every key the remote still thinks is held."""
+
+        for vk_code, extended in sorted(self._forwarded_keys_down):
+            self._schedule_send(
+                {
+                    "type": protocol.MSG_KEY,
+                    "vk_code": vk_code,
+                    "extended": extended,
+                    "pressed": False,
+                    "scan_code": 0,
+                },
+                what="key-release",
+            )
+        self._forwarded_keys_down.clear()
+
+    def _leave_remote_focus(self) -> None:
+        """Drop focused-on-remote silently because the transport is going away.
+
+        The grab would otherwise outlive the connection and swallow
+        every forwardable key from local apps until the user pressed
+        Orca+Alt+Tab again.
+        """
+
+        self._release_forwarded_keys()
+        self._disable_master_grab()
+        self._focus_on_remote = False
 
     def mute_inbound_toggle(self) -> bool:
         """Toggle the master-side inbound-speech mute. Bound to Insert+Ctrl+M.
@@ -1063,23 +1129,26 @@ class RemoteExtension(Extension):
             self._say("Orca Remote not configured. Open Settings to set host, port, and channel key.")
             return
 
-        async def _setup() -> None:
-            transport = RemoteTransport(
-                host=host,
-                port=port,
-                channel=channel,
-                fingerprint=fingerprint,
-                connection_type=connection_type,
-                on_message=self._on_message,
-                on_status=self._on_status,
-                on_fingerprint_mismatch=self._on_fingerprint_mismatch,
-            )
-            transport.start()
-            self._transport = transport
-
-        asyncio.run_coroutine_threadsafe(_setup(), self._loop)
+        # Assign on this thread, start on the loop. Assigning from a
+        # scheduled coroutine left _transport None for a moment, so a
+        # quick second restart or a disconnect missed it and the first
+        # transport kept running with nothing able to stop it.
+        transport = RemoteTransport(
+            host=host,
+            port=port,
+            channel=channel,
+            fingerprint=fingerprint,
+            connection_type=connection_type,
+            on_message=self._on_message,
+            on_status=self._on_status,
+            on_fingerprint_mismatch=self._on_fingerprint_mismatch,
+        )
+        self._transport = transport
+        self._loop.call_soon_threadsafe(transport.start)
 
     def _stop_transport(self) -> None:
+        # Queued before the teardown below, so the releases go out first.
+        self._leave_remote_focus()
         if self._loop is None or self._transport is None:
             # No live transport, but we may still have a stale held-key
             # set from a previous session. Drain it anyway.
@@ -1141,6 +1210,10 @@ class RemoteExtension(Extension):
                 self._say_async("Orca Remote connected.")
         elif msg_type == protocol.MSG_CLIENT_JOINED:
             self._peer_not_connected_announced = False
+            # A new master has no braille yet; send the next frame
+            # even if it matches what the previous peer was shown.
+            self._last_outbound_braille = ("", -2)
+            self._sent_braille_info = False
             self._say_async("Orca Remote: peer joined.")
         elif msg_type == protocol.MSG_CLIENT_LEFT:
             self._peer_not_connected_announced = False
@@ -1149,6 +1222,8 @@ class RemoteExtension(Extension):
             if not self._peer_not_connected_announced:
                 self._peer_not_connected_announced = True
                 self._say_async("Orca Remote: peer is not connected.")
+        elif msg_type == protocol.MSG_PING:
+            pass  # relay keepalive every 5 minutes; nothing to answer
         elif msg_type == protocol.MSG_MOTD:
             motd = str(message.get("motd", "")).strip()
             if motd:
@@ -1405,6 +1480,10 @@ class RemoteExtension(Extension):
         except Exception as error:  # pylint: disable=broad-except
             self._log(f"synthesize_key_event raised: {error}")
 
+        if not pressed:
+            # Forget it even if the release failed; otherwise every
+            # later PRESS of this modifier is dropped as a duplicate.
+            self._pressed_keysyms.discard(keysym)
         if not ok:
             return False
 
@@ -1428,8 +1507,6 @@ class RemoteExtension(Extension):
 
         if pressed:
             self._pressed_keysyms.add(keysym)
-        else:
-            self._pressed_keysyms.discard(keysym)
         return False  # one-shot
 
     def _interrupt_speech_idle_cb(self) -> bool:

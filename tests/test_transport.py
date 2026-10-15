@@ -87,8 +87,7 @@ class FakeFingerprintWriter:
         self.ssl_object = ssl_object
 
     def get_extra_info(self, name):
-        assert name == "ssl_object"
-        return self.ssl_object
+        return self.ssl_object if name == "ssl_object" else None
 
 
 async def _noop_message(_message):
@@ -229,3 +228,29 @@ class TestRemoteTransportConnection:
 
         assert remote._writer is None
         assert writer.closed is True
+
+
+class TestRemoteTransportStop:
+    def test_stop_does_not_wait_for_a_hanging_connect(self, monkeypatch):
+        transport_mod = _load_transport_module()
+
+        async def hanging_open_connection(*_args, **_kwargs):
+            await asyncio.sleep(3600)
+
+        monkeypatch.setattr(transport_mod.asyncio, "open_connection", hanging_open_connection)
+        remote = transport_mod.RemoteTransport(
+            host="example.invalid",
+            port=6837,
+            channel="key",
+            fingerprint="aa",
+            connection_type="master",
+            on_message=_noop_message,
+        )
+
+        async def start_then_stop():
+            remote.start()
+            await asyncio.sleep(0.05)
+            await asyncio.wait_for(remote.stop(), timeout=1.0)
+
+        asyncio.run(start_then_stop())
+        assert remote._task is None

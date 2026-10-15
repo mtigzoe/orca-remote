@@ -104,8 +104,14 @@ class TCPTransport(Transport):
 		self.buffer += data
 
 	def parse(self, line):
-		obj = self.serializer.deserialize(line)
-		if 'type' not in obj:
+		# A bad line raised out of run(), which ConnectorThread does not
+		# catch, so the connection died for good. Drop the line instead.
+		try:
+			obj = self.serializer.deserialize(line)
+		except ValueError:
+			log.warning("dropped malformed line %r" % line[:200])
+			return
+		if not isinstance(obj, dict) or 'type' not in obj:
 			return
 		callback = "msg_"+obj['type']
 		del obj['type']

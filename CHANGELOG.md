@@ -1,6 +1,44 @@
 # Changelog
 
-## Unreleased
+## 0.9.3 -- 2026-10-15
+
+### Fixed
+
+- Leaving the remote with Orca+Alt+Tab, or disconnecting, now releases
+  every key still held on the remote. Before, the Insert and Alt of
+  that chord stayed pressed on the remote machine.
+- Disconnecting, or a settings change, while focused on the remote
+  dropped the link but kept the key grab, so local apps got no
+  keyboard until Orca+Alt+Tab. Stopping the transport now returns
+  focus to the local machine.
+- Holding Insert long enough to autorepeat no longer leaves Orca
+  Remote thinking it is still held, which made Ctrl+M, Ctrl+Page Down
+  and similar chords stop reaching the remote.
+- Caps Lock (laptop layout) now counts as the Orca modifier for local
+  command chords, so Orca+Alt+Tab can leave the remote.
+- Host mode sends identical consecutive speech again after 0.3
+  seconds. Before, typing "aa" or arrowing over two blank lines
+  reached the master only once.
+- Disconnecting while the relay was unreachable froze Orca for two
+  seconds and left the old connection attempt running. The transport
+  now cancels the attempt, gives up a connect after 15 seconds, and
+  enables TCP keepalive so a relay that vanished without closing is
+  noticed in about two minutes instead of never.
+- A quick second connect or settings change could start a second
+  transport that nothing could stop.
+- A failed release of a remote modifier no longer blocks that
+  modifier for the rest of the session.
+- A new master joining mid-session now gets the current braille line.
+- Relay pings are no longer logged as unhandled messages.
+- The legacy transport drops a malformed line instead of ending the
+  connection for good.
+- Host mode holds an inbound Caps Lock until its release arrives, so a
+  remote master can use Orca commands on a laptop-layout host.
+- Connect now redials when the transport is retrying or stopped on a
+  fingerprint mismatch, instead of saying "already connected".
+- The legacy host releases keys a dropped link left held down.
+
+## 0.9.1 - 0.9.2
 
 ### Fixed
 
