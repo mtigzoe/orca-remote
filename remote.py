@@ -109,8 +109,9 @@ _STICKY_KEYSYMS: frozenset[int] = frozenset({
     0xfe04,          # ISO_Level5_Shift
     0xff63,          # Insert       (Orca mod, desktop layout)
     0xff9e,          # KP_Insert    (Orca mod, numpad variant)
-    0xffe5,          # Caps_Lock    (Orca mod, laptop layout)
-    0xffe6,          # Shift_Lock   (Orca mod, laptop layout)
+    # Caps_Lock stays a tap on purpose: held, the X server autorepeats
+    # it before the late wire RELEASE lands and caps state flips again
+    # per repeat (seen live on XWayland: one tap -> on, off, on).
 })
 
 # Keysyms that, when pressed while Orca-mod + Ctrl are held, fire one
@@ -272,6 +273,9 @@ class RemoteExtension(Extension):
         # unreachable on marco/wayland-flagged sessions, and present()
         # doesn't reliably re-raise. Destroy-rebuild is predictable.
         self._settings_dialog: Any = None
+        # (SpeechServer class, original speak_character, original
+        # speak_key_event) while _hook_character_speech is active.
+        self._char_speech_patch: "tuple[Any, Any, Any] | None" = None
         # Master-mode grab state, active while focused-on-remote.
         # Prefer Orca's own AT-SPI device because those grabs consume
         # reliably on X11; fallback to vendored KeysetGrab.
@@ -316,6 +320,7 @@ class RemoteExtension(Extension):
             self.controller.subscribe_speech_emitted(self._on_speech_emitted)
         except AttributeError:
             self._log("controller has no subscribe_speech_emitted (older Orca?)")
+        self._hook_character_speech()
         # Same for braille. Hook landed in perf branch after speech;
         # AttributeError just means we're on a pre-braille-hook Orca,
         # in which case braille mirroring is silently unavailable.
@@ -353,6 +358,7 @@ class RemoteExtension(Extension):
             self.controller.unsubscribe_speech_emitted(self._on_speech_emitted)
         except AttributeError:
             pass
+        self._unhook_character_speech()
         try:
             self.controller.unsubscribe_braille_emitted(self._on_braille_emitted)
         except AttributeError:
@@ -417,6 +423,55 @@ class RemoteExtension(Extension):
         message = {"type": protocol.MSG_SPEAK, "sequence": [text]}
         self._schedule_send(message, what="speech")
 
+    def _hook_character_speech(self) -> None:
+        """Mirror single characters, which bypass speech_emitted.
+
+        Orca emits speech_emitted only from SpeechServer.speak().
+        speak_character() and one-character speak_key_event() go
+        straight to speech-dispatcher's char(), so the master heard
+        nothing while the host typed or arrowed by character (seen
+        live on orca-perf 51.alpha). If Orca starts emitting these
+        itself, the 0.3s dedupe swallows the second copy.
+        """
+
+        if self._char_speech_patch is not None:
+            return
+        try:
+            from orca import speechdispatcherfactory  # pylint: disable=import-outside-toplevel
+            cls = speechdispatcherfactory.SpeechServer
+            orig_char = cls.speak_character
+            orig_key = cls.speak_key_event
+        except Exception as error:  # pylint: disable=broad-except
+            self._log(f"character speech mirroring unavailable: {error}")
+            return
+        ext = self
+
+        def speak_character(server: Any, character: str, *args: Any, **kwargs: Any) -> None:
+            orig_char(server, character, *args, **kwargs)
+            if character:
+                ext._on_speech_emitted(character, "", "")
+
+        def speak_key_event(server: Any, event: Any, *args: Any, **kwargs: Any) -> None:
+            orig_key(server, event, *args, **kwargs)
+            try:
+                name = f"{event.get_key_name()} {event.get_locking_state_string()}".strip()
+            except Exception:  # pylint: disable=broad-except
+                return
+            if len(name) == 1:  # longer names already went through speak()
+                ext._on_speech_emitted(name, "", "")
+
+        cls.speak_character = speak_character
+        cls.speak_key_event = speak_key_event
+        self._char_speech_patch = (cls, orig_char, orig_key)
+
+    def _unhook_character_speech(self) -> None:
+        if self._char_speech_patch is None:
+            return
+        cls, orig_char, orig_key = self._char_speech_patch
+        cls.speak_character = orig_char
+        cls.speak_key_event = orig_key
+        self._char_speech_patch = None
+
     def _on_keyboard_event(
         self,
         pressed: bool,
@@ -475,6 +530,10 @@ class RemoteExtension(Extension):
         # Fall through to the normal forwarding path: the Orca-mod
         # keys themselves SHOULD reach the remote so its screen
         # reader sees Insert/Caps_Lock in its own modifier state.
+        if pressed:
+            # A new key is a new utterance even if it repeats the last
+            # one (fast "ll", Return Return); end the dedupe window.
+            self._last_outbound_speech_at = 0.0
         if keysym in _ORCA_MOD_KEYSYMS:
             if pressed:
                 self._master_orca_mods_down.add(keysym)
@@ -1217,6 +1276,9 @@ class RemoteExtension(Extension):
             self._say_async("Orca Remote: peer joined.")
         elif msg_type == protocol.MSG_CLIENT_LEFT:
             self._peer_not_connected_announced = False
+            # A master that drops mid-chord never sends its releases;
+            # without this its Ctrl/Insert stay held on this machine.
+            self._release_held_keys()
             self._say_async("Orca Remote: peer left.")
         elif msg_type == protocol.MSG_NVDA_NOT_CONNECTED:
             if not self._peer_not_connected_announced:

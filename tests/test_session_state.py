@@ -130,14 +130,27 @@ def test_connect_redials_when_transport_is_not_connected():
     m._restart_transport.assert_not_called()
 
 
-def test_inbound_caps_lock_is_held_for_orca_chords():
+def test_inbound_caps_lock_taps_so_autorepeat_cannot_retoggle_it():
     mod = _load_remote_module()
     m = _master(mod)
     m._chord_matches_own_command = mock.Mock(return_value=False)
     m.controller = mock.Mock()
     m.controller.synthesize_key_event = mock.Mock(return_value=True)
     m._synthesize_key_idle_cb(0xffe5, True)
-    m.controller.synthesize_key_event.assert_called_once_with(0xffe5, True)
+    assert m.controller.synthesize_key_event.call_args_list == [
+        mock.call(0xffe5, True), mock.call(0xffe5, False),
+    ]
+
+
+def test_peer_leaving_releases_keys_it_held():
+    import asyncio
+    mod = _load_remote_module()
+    m = _master(mod)
+    m._say_async = mock.Mock()
+    m._peer_not_connected_announced = False
+    m._release_held_keys = mock.Mock()
+    asyncio.run(m._on_message({"type": mod.protocol.MSG_CLIENT_LEFT}))
+    m._release_held_keys.assert_called_once()
 
 
 def test_legacy_host_releases_keys_left_down_by_a_dropped_link(monkeypatch):
@@ -158,3 +171,34 @@ def test_legacy_host_releases_keys_left_down_by_a_dropped_link(monkeypatch):
     machine.release_all_keys()
 
     assert injected == [("ctrl", False)]
+
+
+def test_single_characters_reach_the_host_speech_mirror():
+    import sys
+    import types
+    mod = _load_remote_module()
+    m = _master(mod)
+    m._char_speech_patch = None
+    spoken = []
+    m._on_speech_emitted = lambda text, *_: spoken.append(text)
+
+    class SpeechServer:
+        def speak_character(self, character, acss=None):
+            pass
+
+        def speak_key_event(self, event, acss=None):
+            pass
+
+    sys.modules["orca"].speechdispatcherfactory = types.SimpleNamespace(SpeechServer=SpeechServer)
+    m._hook_character_speech()
+    event = mock.Mock()
+    event.get_key_name.return_value = "a"
+    event.get_locking_state_string.return_value = ""
+    SpeechServer().speak_character("x")
+    SpeechServer().speak_key_event(event)
+    event.get_key_name.return_value = "left control"
+    SpeechServer().speak_key_event(event)  # already mirrored via speak()
+    m._unhook_character_speech()
+    SpeechServer().speak_character("y")
+
+    assert spoken == ["x", "a"]

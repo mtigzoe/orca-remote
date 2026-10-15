@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.4 -- 2026-10-15
+
+Found by a live test on orca-perf 51.alpha against the stock relay.
+
+### Fixed
+
+- Inbound Caps Lock on the host is a tap again. 0.9.3 held it until the
+  master's release arrived; the X server autorepeated it meanwhile, so
+  one Caps Lock tap toggled caps lock several times.
+- Host mode now mirrors single characters. Orca speaks typed letters
+  and character-by-character arrowing through `speak_character`, which
+  skips the `speech_emitted` hook, so the master heard nothing.
+- Fast identical keys (Return Return, a quick double letter) are no
+  longer merged into one utterance: any key press ends the 0.3-second
+  duplicate window.
+- Host mode releases the keys a master was holding when that master
+  leaves the channel; a master that dropped mid-chord left its Ctrl or
+  Insert held down on the host.
+
 ## 0.9.3 -- 2026-10-15
 
 ### Fixed
@@ -32,8 +51,6 @@
 - Relay pings are no longer logged as unhandled messages.
 - The legacy transport drops a malformed line instead of ending the
   connection for good.
-- Host mode holds an inbound Caps Lock until its release arrives, so a
-  remote master can use Orca commands on a laptop-layout host.
 - Connect now redials when the transport is retrying or stopped on a
   fingerprint mismatch, instead of saying "already connected".
 - The legacy host releases keys a dropped link left held down.
