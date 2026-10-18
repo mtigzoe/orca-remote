@@ -2,27 +2,35 @@
 
 ## 0.9.8 -- 2026-10-17
 
-### Fixed
-
-- Legacy path: **`./install <server> <port> <key>` never auto-connected.**
-  The installer rewrites every `"host"` / `"key"` literal in
-  `orca-customizations.py`, including the auto-connect check itself, so
-  `_has_config` always evaluated false and the transport thread never
-  started. The installer now sets a dedicated
-  `ORCA_REMOTE_AUTO_CONNECT` flag instead. Regression-tested in
-  `tests/test_package.py`.
-- Legacy path: **Ctrl+Shift+Orca+C never dispatched.** With Shift held
-  the key name is `C`, and the shortcut matcher only accepted lowercase
-  `c`; both are accepted now. Found by pressing every legacy chord with
-  xdotool against Orca 48.1 under Xvfb on serrebiradio.com.
-
 ### Added
 
+- The fingerprint seen on a mismatch is **saved as a plain text file**,
+  `~/orca-remote-fingerprint.txt`, and the announcement names the path
+  (`nano ~/orca-remote-fingerprint.txt`). The clipboard is the fragile
+  part across sessions -- X selections with no clipboard manager,
+  Wayland clipboard tooling, a paste landing next to the old value --
+  while a file always works. The clipboard copy stays as a convenience.
 - Legacy path: the transport thread now logs to
   `~/.local/share/orca/orca-remote-debug.log` when it connects
   (`transport connected: ...`) and when it crashes (with the traceback).
   Both messages used to go to stdout, which Orca's daemonization
   discards, so a failed connection was invisible.
+
+### Fixed
+
+- Legacy path: **the installer's sentinel rewrite broke two things.**
+  It replaced every `"host"` / `"key"` literal in
+  `orca-customizations.py`, which (a) rewrote the auto-connect check so
+  `./install <server> <port> <key>` never connected, and (b) rewrote
+  the forwarding frame type from `type="key"` to the channel name, so
+  master-side forwarding sent frames peers ignored. The installer now
+  replaces the three settings lines only, and a dedicated
+  `ORCA_REMOTE_AUTO_CONNECT` flag drives auto-connect.
+  Regression-tested in `tests/test_package.py`.
+- Legacy path: **Ctrl+Shift+Orca+C never dispatched.** With Shift held
+  the key name is `C`, and the shortcut matcher only accepted lowercase
+  `c`; both are accepted now. Found by pressing every legacy chord with
+  xdotool against Orca 48.1 under Xvfb on serrebiradio.com.
 
 ## 0.9.7 -- 2026-10-17
 

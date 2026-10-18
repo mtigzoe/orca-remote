@@ -78,6 +78,19 @@ except Exception:  # pylint: disable=broad-except
 
 _SETTINGS_FILENAME = "orca-remote-settings.json"
 
+# Last fingerprint seen on a mismatch, saved as plain text so it can be
+# copied by hand (nano ~/orca-remote-fingerprint.txt). Clipboard
+# handling is the fragile part across sessions: X selections with no
+# clipboard manager, GPaste/Klipper on Wayland, wl-copy, and a paste
+# that lands next to the old value all fail in different ways.
+_FINGERPRINT_FILENAME = "orca-remote-fingerprint.txt"
+
+
+def _fingerprint_file_path() -> str:
+    """Path of the saved fingerprint in the user's home directory."""
+
+    return os.path.join(os.path.expanduser("~"), _FINGERPRINT_FILENAME)
+
 
 # A SHA-256 fingerprint is 64 hex characters. Anything else can never
 # match a certificate, so a malformed pin is worth refusing loudly
@@ -1852,10 +1865,12 @@ class RemoteExtension(Extension):
         GLib.idle_add(self._copy_fingerprint_idle_cb, actual)
         self._say_async(
             "Orca Remote: server fingerprint did not match. "
-            "The fingerprint has been copied to the clipboard. "
+            f"The fingerprint was copied to the clipboard and saved to "
+            f"{_fingerprint_file_path()}. "
             "Press Orca+Ctrl+R, focus the Server fingerprint field, "
             "press Control+A to select the old value, then paste with "
-            "Control+V."
+            "Control+V. If pasting does not work, copy the line from "
+            "that file instead."
         )
 
     def _copy_fingerprint_idle_cb(self, actual: str) -> bool:
@@ -1873,7 +1888,23 @@ class RemoteExtension(Extension):
                 clipboard.set_text(actual, -1)
             except Exception as error:  # pylint: disable=broad-except
                 self._log(f"Gtk clipboard write failed: {error}")
+        self._write_fingerprint_file(actual)
         return False  # one-shot
+
+    def _write_fingerprint_file(self, actual: str) -> str:
+        """Save the last-seen fingerprint for manual copying.
+
+        Returns the path, or "" when it could not be written.
+        """
+
+        path = _fingerprint_file_path()
+        try:
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(actual.strip() + "\n")
+        except OSError as error:
+            self._log(f"could not write {path}: {error}")
+            return ""
+        return path
 
     # ---- helpers ---------------------------------------------------
 

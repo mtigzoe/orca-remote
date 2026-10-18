@@ -129,7 +129,7 @@ openssl s_client -servername nvdaremote.com -connect nvdaremote.com:6837 \
   | tr '[:upper:]' '[:lower:]'
 ```
 
-Paste that value into **Server fingerprint (SHA-256)** in Orca Remote settings. If the relay's certificate ever changes, Orca announces the mismatch and copies the new fingerprint to the clipboard: press Orca+Ctrl+R, focus the Server fingerprint field, press **Control+A** to select the old value, then paste with Control+V. A value that is not 64 hex characters is refused with a spoken reason, so a paste that lands next to the old value cannot silently break the connection.
+Paste that value into **Server fingerprint (SHA-256)** in Orca Remote settings. If the relay's certificate ever changes, Orca announces the mismatch, copies the new fingerprint to the clipboard, and saves it to `~/orca-remote-fingerprint.txt` -- open that file with `nano ~/orca-remote-fingerprint.txt` if the clipboard paste does not work. Then press Orca+Ctrl+R, focus the Server fingerprint field, press **Control+A** to select the old value, then paste with Control+V. A value that is not 64 hex characters is refused with a spoken reason, so a paste that lands next to the old value cannot silently break the connection.
 
 ## Roles
 

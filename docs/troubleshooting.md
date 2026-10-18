@@ -217,10 +217,15 @@ stored (wrong) pin. Pasting without selecting first appends to it, so
 the saved value is 128 characters instead of 64 and can never match.
 The mismatch announcement used to say only "paste with Control+V".
 
-**Fix (0.9.6).**
+**Fix (0.9.6 → 0.9.8).**
 
-- The announcement now says: press **Control+A** to select the old
-  value, then paste.
+- The mismatch announcement now says: press **Control+A** to select the
+  old value, then paste.
+- The fingerprint is **also saved as a plain text file**:
+  `~/orca-remote-fingerprint.txt`. That is the reliable path when the
+  clipboard does not cooperate (X selections with no clipboard manager,
+  Wayland clipboard tooling, a paste that lands next to the old value):
+  `nano ~/orca-remote-fingerprint.txt`, copy the single line, paste it.
 - A pasted value that is not 64 hex characters is refused when you
   save, with a spoken reason, and the old pin is kept.
 - A malformed stored pin is refused before dialing with the same

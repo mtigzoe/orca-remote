@@ -146,11 +146,13 @@ class TestFingerprintPin:
         instance._say_async = mock.Mock()
         instance.controller = mock.Mock()
 
-        with mock.patch.object(mod.GLib, "idle_add", create=True):
+        with mock.patch.object(mod.GLib, "idle_add", create=True), \
+                mock.patch.object(mod, "_fingerprint_file_path", return_value="/home/u/fp.txt"):
             instance._on_fingerprint_mismatch(GOOD_PIN)
 
         announcement = instance._say_async.call_args.args[0]
         assert "Control+A" in announcement
+        assert "/home/u/fp.txt" in announcement
 
     def test_fingerprint_copy_also_writes_through_gtk(self):
         mod = _load_remote_module()
@@ -158,11 +160,35 @@ class TestFingerprintPin:
         instance.controller = mock.Mock()
         clipboard = _FakeClipboard()
 
-        with mock.patch.object(mod, "_gtk_clipboard", return_value=clipboard):
+        with mock.patch.object(mod, "_gtk_clipboard", return_value=clipboard), \
+                mock.patch.object(mod, "_fingerprint_file_path", return_value="unused"):
+            instance._write_fingerprint_file = mock.Mock(return_value="unused")
             instance._copy_fingerprint_idle_cb(GOOD_PIN)
 
         instance.controller.set_clipboard_text.assert_called_once_with(GOOD_PIN)
         assert clipboard.written == [GOOD_PIN]
+
+    def test_fingerprint_is_saved_to_a_text_file(self, tmp_path):
+        mod = _load_remote_module()
+        instance = _instance(mod)
+        path = tmp_path / "orca-remote-fingerprint.txt"
+
+        with mock.patch.object(mod, "_fingerprint_file_path", return_value=str(path)):
+            written = instance._write_fingerprint_file(GOOD_PIN)
+
+        assert written == str(path)
+        assert path.read_text(encoding="utf-8") == GOOD_PIN + "\n"
+
+    def test_fingerprint_file_failure_is_logged(self, tmp_path):
+        mod = _load_remote_module()
+        instance = _instance(mod)
+        missing = tmp_path / "missing-dir" / "orca-remote-fingerprint.txt"
+
+        with mock.patch.object(mod, "_fingerprint_file_path", return_value=str(missing)):
+            assert instance._write_fingerprint_file(GOOD_PIN) == ""
+
+        instance._log.assert_called_once()
+        assert "could not write" in instance._log.call_args.args[0]
 
     def test_transport_refuses_to_dial_with_a_malformed_pin(self):
         mod = _load_remote_module()
