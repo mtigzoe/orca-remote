@@ -195,6 +195,30 @@ a plain letter and Orca+ chords all produce zero Orca activity. Chord
 registration and the bypass list therefore stay unit-tested; do not
 "fix" a chord that looks dead in WSLg without checking a real session.
 
+The mechanism, for whoever hits this next (measured on WSLg, Orca
+51.alpha, 2026-10-17):
+
+- GDK defaults to the **Wayland** display (`wayland-0`) there; the
+  X11 display (`:0`) is Xwayland under Weston. Neither presents a
+  keyboard: `Gdk.Display.list_devices()` on the Wayland side lists
+  pointers only, and on `GDK_BACKEND=x11` the XI2 device list is five
+  pointer devices with no keyboard at all (WSLg's seat only gains a
+  keyboard while a WSLg desktop/RDP client is attached).
+- `at-spi2-registryd`, which owns Orca's key grabs, is started by the
+  **session bus**, not by Orca, and here it was started with `DISPLAY`
+  unset -- its X11 backend has no connection at all. Restarting
+  `at-spi-bus-launcher` with `DISPLAY=:0` fixes that (`/proc/<pid>/environ`
+  then shows it), but it does not restore key delivery.
+- at-spi grabs are XInput2 grabs. With no keyboard device for XI2,
+  XTEST-injected keys still reach a **focused X11 window through core
+  delivery** (verified: a GTK X11 entry received `hello` from
+  `xdotool key`), but they never reach XI2 grabs -- so Orca stays blind
+  even as an X11 client with a DISPLAY-aware registryd.
+
+Net: key delivery to Orca needs a real session (Xorg or Wayland with a
+compositor-provided keyboard). Everything below is what WSLg *can*
+verify.
+
 What a WSLg session *can* verify:
 
 - Command handlers, called directly (write the handler name to a file
