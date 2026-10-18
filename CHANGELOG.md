@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.9.10 -- 2026-10-17
+
+### Added
+
+- Client mode now plays the remote machine's beeps. NVDA sends beeps
+  (progress-bar updates, browse-mode errors, its own audio cues) as
+  `tone` frames; the modern dispatch had no tone branch and dropped
+  them as unhandled, so a Linux user controlling a Windows machine
+  heard none of them -- a parity gap with the legacy implementation,
+  which played tones from the start. Tones play through sox `play`
+  when available, else a generated WAV through paplay (the legacy
+  backends), and obey the same focus and mute gate as remote speech
+  and cancel frames: a remote you are not listening to does not beep
+  at you either. Malformed tone frames are dropped silently.
+
+### Verified
+
+- The speech path was re-checked end to end against a live NVDA host
+  (NVDA's own local relay server): `speak` frames flow to a joined
+  master and answer forwarded keys immediately, so with 0.9.10 the
+  client-side feature set matches the legacy implementation for
+  controlling a Windows machine -- speech, cancel, braille, and now
+  tones.
+
 ## 0.9.9 -- 2026-10-17
 
 ### Fixed

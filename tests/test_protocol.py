@@ -161,6 +161,7 @@ class TestConstants:
         assert protocol.MSG_SET_CLIPBOARD_TEXT == "set_clipboard_text"
         assert protocol.MSG_SET_BRAILLE_INFO == "set_braille_info"
         assert protocol.MSG_DISPLAY == "display"
+        assert protocol.MSG_TONE == "tone"
         assert protocol.CONNECTION_TYPE_MASTER == "master"
         assert protocol.CONNECTION_TYPE_SLAVE == "slave"
         assert protocol.PROTOCOL_VERSION == 2

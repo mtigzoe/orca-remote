@@ -52,6 +52,7 @@ self-hosted v2 relays both work.
 | `set_clipboard_text`| both            | `controller.set_clipboard_text`; brief spoken "peer pushed clipboard (N chars)" cue (length only — could be a password). |
 | `set_braille_info`  | both            | Track peer's `numCells` in `_peer_braille_cells` for informational use. |
 | `display`           | client only     | Render incoming cells as Unicode braille block characters (U+2800 + cell_byte) via `controller.display_braille_text`. Same gating as `speak` (`focus_on_remote AND NOT inbound_speech_muted`). Shipped 0.6.1. |
+| `tone`              | client only     | Play the peer's beep locally: `{hz, length (ms), left, right (0..100)}` via sox `play`, else a generated WAV via `paplay`. Same gating as `speak`. Shipped 0.9.10 (the legacy implementation's `msg_tone` had it from the start). |
 | `nvda_not_connected`| both            | Speak "peer is not connected" once until a peer joins or the session intent resets. |
 
 Anything not in the table is logged as "unhandled message type: ..."

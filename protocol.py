@@ -46,6 +46,7 @@ MSG_KEY = "key"
 MSG_SET_CLIPBOARD_TEXT = "set_clipboard_text"
 MSG_SET_BRAILLE_INFO = "set_braille_info"
 MSG_DISPLAY = "display"
+MSG_TONE = "tone"
 
 
 # Connection type sent in the join message. "master" = we are the

@@ -33,7 +33,8 @@ File transfer is not implemented — use clipboard sync for text, or a separate 
   `ydotool` (any session, needs `ydotoold` running). On GNOME/KDE
   Wayland the extension uses the XDG RemoteDesktop portal instead, with
   a one-time keyboard-control prompt.
-- Optional, for legacy mode only: `sox`, `xclip`.
+- Optional: `sox` (client-mode tone playback; a generated-WAV + `paplay`
+  fallback is built in), `xclip` (legacy mode only).
 
 Some features depend on newer Orca controller hooks:
 

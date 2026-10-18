@@ -12,11 +12,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
+import shutil
+import struct
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 import types
+import wave
 from typing import Any
 
 # Workaround: orca's extension loader synthesizes the child package
@@ -229,6 +235,80 @@ def _settings_path() -> str:
         "orca",
         _SETTINGS_FILENAME,
     )
+
+
+def _play_tone_blocking(
+    hz: int, length_ms: int, left: int, right: int, log: Any
+) -> None:
+    """Play one NVDA `tone` frame on the local audio system.
+
+    Mirrors the legacy implementation's backends: sox `play` when
+    present, else a generated WAV through paplay. Runs on a worker
+    thread (spawned by RemoteExtension._play_tone) because it spawns
+    subprocesses and, in the fallback path, writes a temp file.
+    """
+
+    volume = max(left, right) / 100.0
+    if volume <= 0:
+        return
+    play = shutil.which("play")
+    if play is not None:
+        try:
+            subprocess.Popen(
+                [
+                    play, "-qn", "synth", f"{length_ms / 1000.0:.3f}",
+                    "sine", str(hz), "vol", f"{volume:.2f}",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return
+        except OSError:
+            pass  # fall through to the WAV fallback
+    paplay = shutil.which("paplay")
+    if paplay is None:
+        log("tone: no audio backend (install sox or pulseaudio-utils)")
+        return
+    sample_rate = 22050
+    n_samples = int(sample_rate * length_ms / 1000.0)
+    amplitude = int(16000 * volume)
+    frames = b"".join(
+        struct.pack(
+            "<h",
+            int(amplitude * math.sin(2 * math.pi * hz * i / sample_rate)),
+        )
+        for i in range(n_samples)
+    )
+    fd, path = tempfile.mkstemp(suffix=".wav")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            with wave.open(handle, "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(sample_rate)
+                wav_file.writeframes(frames)
+        subprocess.Popen(
+            [paplay, path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, wave.Error):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        return
+
+    # paplay reads the file asynchronously; remove it once the tone
+    # has had time to finish.
+    def _cleanup() -> None:
+        time.sleep(length_ms / 1000.0 + 0.5)
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+    threading.Thread(target=_cleanup, daemon=True).start()
 
 
 class RemoteExtension(Extension):
@@ -1475,6 +1555,16 @@ class RemoteExtension(Extension):
                     )
                     if text:
                         GLib.idle_add(self._render_inbound_braille_idle_cb, text)
+        elif msg_type == protocol.MSG_TONE:
+            # The peer's screen reader beeped (progress bar updates,
+            # browse-mode errors, NVDA's own cues). NVDA sends these
+            # as tone frames; the legacy implementation played them
+            # locally, but the modern dispatch had no tone branch and
+            # dropped them as unhandled until 0.9.10. Same focus and
+            # mute gate as cancel: a remote we are not listening to
+            # must not beep at us either.
+            if not self._inbound_speech_drop_reason():
+                self._play_tone(message)
         else:
             self._log(f"unhandled message type: {msg_type}")
 
@@ -1501,6 +1591,33 @@ class RemoteExtension(Extension):
             return
         self._speak_ignored_reasons.add(reason)
         self._log(f"inbound speech dropped ({reason})")
+
+    def _play_tone(self, message: dict) -> None:
+        """Parse a `tone` frame and play it on a worker thread.
+
+        Payload (NVDA Remote v2): hz and length (milliseconds) are
+        required and must be positive; left/right are per-channel
+        volumes in 0..100, defaulting to 50 when absent. Malformed
+        frames are dropped silently -- a bad beep is never worth an
+        announcement or an exception on the read loop.
+        """
+
+        try:
+            hz = int(message.get("hz") or 0)
+            length = int(message.get("length") or 0)
+            left = int(message.get("left", 50) or 0)
+            right = int(message.get("right", 50) or 0)
+        except (TypeError, ValueError):
+            return
+        if hz <= 0 or length <= 0:
+            return
+        left = min(100, max(0, left))
+        right = min(100, max(0, right))
+        threading.Thread(
+            target=_play_tone_blocking,
+            args=(hz, length, left, right, self._log),
+            daemon=True,
+        ).start()
 
     def toggle_speech_mirror(self) -> bool:
         """Flip the host-mode speech mirror on/off. Spoken feedback."""
