@@ -1,33 +1,48 @@
 #!/usr/bin/env python3
 
 from glob import glob
+import json
 import os
+import re
 import shutil
 import sys
 
 
-def replace_string(text, default, new):
-    return text.replace('"%s"' % default, '"%s"' % new)
+def replace_setting(text, name, literal):
+    """Replace one ``NAME = ...`` settings line; leave other uses alone.
+
+    Rewriting the bare sentinels ("host", "key") used to hit every
+    occurrence, including ``type="key"`` in the key-forwarding frames
+    and the auto-connect check. Anchor on the assignment line instead.
+    """
+
+    pattern = re.compile(r"(?m)^%s = .*$" % re.escape(name))
+    replacement = "%s = %s" % (name, literal)
+    return pattern.sub(replacement, text, count=1)
 
 
 def make_orca_customizations(destfile, nvda_remote_host=None, nvda_remote_port=None, nvda_remote_key=None):
     with open("orca-customizations.py", "r") as f:
         customizations = f.read()
-        if nvda_remote_host:
-            customizations = replace_string(customizations, "host", nvda_remote_host)
-        if nvda_remote_port:
-            customizations = customizations.replace("6837", nvda_remote_port)
-        if nvda_remote_key:
-            customizations = replace_string(customizations, "key", nvda_remote_key)
-        # The sentinel rewrite above also hits the auto-connect check, so
-        # the plugin asks for this flag instead.
-        if nvda_remote_host and nvda_remote_key:
-            customizations = customizations.replace(
-                "ORCA_REMOTE_AUTO_CONNECT = False",
-                "ORCA_REMOTE_AUTO_CONNECT = True",
-            )
-        with open(destfile, "w") as f2:
-            f2.write(customizations)
+    if nvda_remote_host:
+        customizations = replace_setting(
+            customizations, "YOUR_NVDAREMOTE_SERVER_ADDRESS", json.dumps(str(nvda_remote_host)),
+        )
+    if nvda_remote_port:
+        customizations = replace_setting(
+            customizations, "YOUR_NVDAREMOTE_SERVER_PORT", str(int(nvda_remote_port)),
+        )
+    if nvda_remote_key:
+        customizations = replace_setting(
+            customizations, "YOUR_NVDAREMOTE_KEY", json.dumps(str(nvda_remote_key)),
+        )
+    if nvda_remote_host and nvda_remote_key:
+        customizations = customizations.replace(
+            "ORCA_REMOTE_AUTO_CONNECT = False",
+            "ORCA_REMOTE_AUTO_CONNECT = True",
+        )
+    with open(destfile, "w") as f2:
+        f2.write(customizations)
 
 
 def main():

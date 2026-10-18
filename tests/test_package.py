@@ -200,7 +200,11 @@ def test_legacy_installer_enables_auto_connect(tmp_path, monkeypatch):
     assert 'YOUR_NVDAREMOTE_SERVER_ADDRESS = "127.0.0.1"' in text
     assert 'YOUR_NVDAREMOTE_KEY = "test4120"' in text
     assert "ORCA_REMOTE_AUTO_CONNECT = True" in text
-    assert 'YOUR_NVDAREMOTE_SERVER_ADDRESS != "127.0.0.1"' not in text
+    # The key-forwarding frame type must survive the rewrite: replacing
+    # every "key" literal turned type="key" into the channel name, so
+    # forwarding sent frames peers ignored.
+    assert 'type="key"' in text
+    assert 'type="test4120"' not in text
 
 
 def test_legacy_installer_without_args_keeps_auto_connect_off(tmp_path, monkeypatch):
