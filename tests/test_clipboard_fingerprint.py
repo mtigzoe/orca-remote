@@ -1,0 +1,192 @@
+"""Clipboard push and fingerprint-pin handling regressions.
+
+Two live findings on Orca 51.alpha (perf build, rev 92a603f):
+
+- Its ClipboardPresenter has no get_text, so the controller's
+  get_clipboard_text() always returns "", and clipboard push always
+  claimed the clipboard was empty. The extension now falls back to the
+  Gtk clipboard.
+- Pasting a fingerprint into the pre-filled settings field appends to
+  the stored value, producing a pin that can never match; the connect
+  loop then reported only "fingerprint did not match". Malformed pins
+  are now normalized/rejected with a spoken reason instead.
+"""
+
+from __future__ import annotations
+
+from unittest import mock
+
+from tests.test_bypass_chords import _load_remote_module
+
+GOOD_PIN = "431acb53822c437de4a5fb774955c73a94c3040ccc571373955665696b6f4594"
+
+
+class _FakeClipboard:
+    def __init__(self, text: str = "") -> None:
+        self.text = text
+        self.written: list[str] = []
+
+    def wait_for_text(self) -> str:
+        return self.text
+
+    def set_text(self, text: str, _length: int) -> None:
+        self.written.append(text)
+
+
+def _instance(mod):
+    instance = mod.RemoteExtension.__new__(mod.RemoteExtension)
+    instance._settings = {"role": "client"}
+    instance._schedule_send = mock.Mock()
+    instance._say = mock.Mock()
+    instance._log = mock.Mock()
+    instance._save_settings = mock.Mock()
+    instance._restart_transport = mock.Mock()
+    instance._disabled = False
+    return instance
+
+
+class TestClipboardPush:
+    """push_clipboard must not depend on the controller's read helper."""
+
+    def test_falls_back_to_gtk_when_the_controller_returns_nothing(self):
+        mod = _load_remote_module()
+        instance = _instance(mod)
+        instance._transport = object()
+        instance.controller = mock.Mock()
+        instance.controller.get_clipboard_text.return_value = ""
+        clipboard = _FakeClipboard("text from gtk")
+
+        with mock.patch.object(mod, "_gtk_clipboard", return_value=clipboard):
+            instance.push_clipboard()
+
+        assert instance._schedule_send.call_args.args[0] == {
+            "type": mod.protocol.MSG_SET_CLIPBOARD_TEXT,
+            "text": "text from gtk",
+        }
+        assert "pushed clipboard" in instance._say.call_args.args[0]
+
+    def test_still_reports_an_empty_clipboard(self):
+        mod = _load_remote_module()
+        instance = _instance(mod)
+        instance._transport = object()
+        instance.controller = mock.Mock()
+        instance.controller.get_clipboard_text.return_value = ""
+
+        with mock.patch.object(mod, "_gtk_clipboard", return_value=_FakeClipboard("")):
+            instance.push_clipboard()
+
+        instance._schedule_send.assert_not_called()
+        assert "empty" in instance._say.call_args.args[0]
+
+    def test_controller_text_wins_when_present(self):
+        mod = _load_remote_module()
+        instance = _instance(mod)
+        instance._transport = object()
+        instance.controller = mock.Mock()
+        instance.controller.get_clipboard_text.return_value = "controller text"
+
+        with mock.patch.object(mod, "_gtk_clipboard", return_value=_FakeClipboard("gtk")):
+            instance.push_clipboard()
+
+        assert instance._schedule_send.call_args.args[0]["text"] == "controller text"
+
+
+class TestFingerprintPin:
+    """Malformed pins must be refused loudly, not looped on."""
+
+    def test_rejects_a_paste_appended_to_the_old_value(self):
+        mod = _load_remote_module()
+        instance = _instance(mod)
+        result = {mod.SETTING_FINGERPRINT: "00" * _FINGERPRINT_LEN(mod) + GOOD_PIN}
+
+        rejected = instance._reject_bad_fingerprint(result)
+
+        assert rejected == 128
+        assert mod.SETTING_FINGERPRINT not in result
+
+    def test_normalizes_separators_and_case(self):
+        mod = _load_remote_module()
+        instance = _instance(mod)
+        upper = GOOD_PIN.upper()
+        colonized = ":".join(upper[i:i + 2] for i in range(0, len(upper), 2))
+        result = {mod.SETTING_FINGERPRINT: colonized}
+
+        rejected = instance._reject_bad_fingerprint(result)
+
+        assert rejected == 0
+        assert result[mod.SETTING_FINGERPRINT] == GOOD_PIN
+
+    def test_empty_pin_is_allowed(self):
+        mod = _load_remote_module()
+        instance = _instance(mod)
+        result = {mod.SETTING_FINGERPRINT: ""}
+
+        assert instance._reject_bad_fingerprint(result) == 0
+        assert result[mod.SETTING_FINGERPRINT] == ""
+
+    def test_settings_save_keeps_the_old_pin_and_says_why(self):
+        mod = _load_remote_module()
+        instance = _instance(mod)
+        instance._settings = {mod.SETTING_FINGERPRINT: GOOD_PIN, mod.SETTING_CHANNEL: "old"}
+        instance._settings_dialog = None
+
+        instance._on_settings_result({
+            mod.SETTING_FINGERPRINT: "ff" * _FINGERPRINT_LEN(mod) + GOOD_PIN,
+            mod.SETTING_CHANNEL: "new-channel",
+        })
+
+        assert instance._settings[mod.SETTING_FINGERPRINT] == GOOD_PIN
+        assert instance._settings[mod.SETTING_CHANNEL] == "new-channel"
+        assert "not 64" in instance._say.call_args.args[0]
+        instance._restart_transport.assert_called_once()
+
+    def test_mismatch_announcement_tells_the_user_to_select_first(self):
+        mod = _load_remote_module()
+        instance = _instance(mod)
+        instance._say_async = mock.Mock()
+        instance.controller = mock.Mock()
+
+        with mock.patch.object(mod.GLib, "idle_add", create=True):
+            instance._on_fingerprint_mismatch(GOOD_PIN)
+
+        announcement = instance._say_async.call_args.args[0]
+        assert "Control+A" in announcement
+
+    def test_fingerprint_copy_also_writes_through_gtk(self):
+        mod = _load_remote_module()
+        instance = _instance(mod)
+        instance.controller = mock.Mock()
+        clipboard = _FakeClipboard()
+
+        with mock.patch.object(mod, "_gtk_clipboard", return_value=clipboard):
+            instance._copy_fingerprint_idle_cb(GOOD_PIN)
+
+        instance.controller.set_clipboard_text.assert_called_once_with(GOOD_PIN)
+        assert clipboard.written == [GOOD_PIN]
+
+    def test_transport_refuses_to_dial_with_a_malformed_pin(self):
+        mod = _load_remote_module()
+        instance = _instance(mod)
+        instance._loop = object()
+        instance._transport = None
+        instance._settings = {
+            mod.SETTING_HOST: "127.0.0.1",
+            mod.SETTING_PORT: 6837,
+            mod.SETTING_CHANNEL: "chan",
+            mod.SETTING_FINGERPRINT: "ab" * 40,
+        }
+        instance._stop_transport = mock.Mock()
+
+        # Call the real implementation (the helper used elsewhere in this
+        # file replaces it with a Mock).
+        mod.RemoteExtension._restart_transport(instance)
+
+        instance._stop_transport.assert_called_once()
+        assert "not 64 hex characters" in instance._say.call_args.args[0]
+        assert instance._transport is None
+
+
+def _FINGERPRINT_LEN(mod) -> int:
+    """Number of 2-char groups in a valid pin, for building bad values."""
+
+    return mod._FINGERPRINT_CHARS // 2

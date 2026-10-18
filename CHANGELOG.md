@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.9.6 -- 2026-10-17
+
+Two live findings from driving every shortcut on Orca 51.alpha (perf
+build, rev 92a603f) in WSLg.
+
+### Fixed
+
+- Clipboard push no longer claims the clipboard is empty when it is not.
+  That build's `ClipboardPresenter` has no `get_text` at all, so
+  `controller.get_clipboard_text()` always returned "", and every push
+  ended in "clipboard is empty". The extension now falls back to the
+  Gtk clipboard when the controller returns nothing -- verified live:
+  push reports the real character count.
+- A fingerprint paste into the pre-filled settings field produced a pin
+  that could never match (the paste appends to the old value), and the
+  connection then repeated "fingerprint did not match" forever with no
+  hint why. Now:
+  - the dialog value is normalized (separators, case) and a value that
+    is not 64 hex characters is refused with a spoken reason, keeping
+    the old pin;
+  - a malformed stored pin is refused before dialing, with the same
+    explanation, instead of looping;
+  - the mismatch announcement says to press Control+A to select the old
+    value before pasting.
+- The fingerprint copy is now also written through Gtk, because
+  `set_clipboard_text` is a silent no-op when the clipboard presenter
+  has no active manager (no GPaste/Klipper, presenter not yet
+  activated). The announcement promised a clipboard value that could
+  silently not be there.
+
+### Added
+
+- Tests for the clipboard fallback, pin normalization/rejection, and
+  the malformed-pin transport guard.
+- agents.md: what can and cannot be verified live in WSLg/Xvfb (Orca
+  receives no key events there, so chord dispatch cannot be exercised;
+  drive the handlers directly or use a real session).
+
 ## 0.9.5 -- 2026-10-17
 
 Installing and speech on released Orca (51.1), plus quieter diagnostics

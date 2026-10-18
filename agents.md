@@ -186,6 +186,33 @@ python3 -m pytest tests/
 
 There is no full Orca integration test suite in this repo. Prefer pure-function tests for protocol, keymap, and braille behavior, and verify live behavior in an Orca session when changing controller hooks or keyboard handling.
 
+### Live testing on WSLg / Xvfb
+
+Orca's AT-SPI keyboard device never sees key events in WSLg (synthetic
+XTEST keys included), so **no Orca+ chord dispatches there** and
+`_on_keyboard_event` never fires. Verified on Orca 51.alpha in WSLg:
+a plain letter and Orca+ chords all produce zero Orca activity. Chord
+registration and the bypass list therefore stay unit-tested; do not
+"fix" a chord that looks dead in WSLg without checking a real session.
+
+What a WSLg session *can* verify:
+
+- Command handlers, called directly (write the handler name to a file
+  that a throwaway test extension polls, as the 0.9.6 test rig did).
+- Announcements and speech gating: the debug log prints every spoken
+  string as `SPEECH: Speak '...'`, and inbound drops as
+  `REMOTE: inbound speech dropped (<reason>)`.
+- Transport behaviour against `orca-scripts/local_server.py` (relay)
+  with `tests/fake_master.py` or a small peer script as the observer;
+  the relay logs every inbound frame to
+  `~/.local/share/orca/orca-remote-debug.log`.
+- Grabs (`REMOTE: master grab active (orca device): N held, M refused`).
+
+What it cannot: chord → handler dispatch, and X clipboard transfers
+between processes — WSLg has no clipboard manager, so a selection set
+by one process is not readable by another (reads inside the owning
+process still work, which is enough to verify a Gtk fallback path).
+
 ## Important Conventions
 
 - Prefer the modern extension path for new features.

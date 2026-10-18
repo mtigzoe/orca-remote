@@ -58,6 +58,10 @@ from .keymap import forwardable_keysyms, keysym_to_vk, vk_to_keysym
 from .protocol import CONNECTION_TYPE_MASTER, CONNECTION_TYPE_SLAVE
 from .transport import RemoteTransport
 
+# Both modules need the same normalization rule, so the helper lives
+# with the transport that compares the pin.
+from .transport import _normalize_fingerprint
+
 # Vendored orca-ext-utils (see vendor/UPDATE.md for sync notes). The
 # import is guarded so an extension built without the vendor tree
 # (developer running from a source checkout that hasn't synced yet)
@@ -72,6 +76,35 @@ except Exception:  # pylint: disable=broad-except
 
 
 _SETTINGS_FILENAME = "orca-remote-settings.json"
+
+
+# A SHA-256 fingerprint is 64 hex characters. Anything else can never
+# match a certificate, so a malformed pin is worth refusing loudly
+# instead of dialing and reporting a mismatch forever.
+_FINGERPRINT_CHARS = 64
+
+
+def _gtk_clipboard() -> Any:
+    """Return the Gtk CLIPBOARD object, or None when GTK is unusable here.
+
+    The clipboard is read and written directly on some paths: builds
+    whose clipboard presenter has no get_text make
+    controller.get_clipboard_text() always return "", and
+    set_clipboard_text is a silent no-op when no clipboard manager is
+    active. Gtk's own clipboard is the fallback Orca's presenter uses
+    too, so this is the same mechanism, minus the presenter's state.
+    """
+
+    try:
+        import gi  # pylint: disable=import-outside-toplevel
+
+        gi.require_version("Gdk", "3.0")
+        gi.require_version("Gtk", "3.0")
+        from gi.repository import Gdk, Gtk  # pylint: disable=import-outside-toplevel
+
+        return Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+    except Exception:  # pylint: disable=broad-except
+        return None
 
 
 # Orca builds report outbound speech two different ways. The perf
@@ -1091,6 +1124,8 @@ class RemoteExtension(Extension):
         self._settings_dialog = None
         if result is None:
             return
+        result = dict(result)
+        rejected_fingerprint = self._reject_bad_fingerprint(result)
         changed = False
         for key, value in result.items():
             if self._settings.get(key) != value:
@@ -1098,13 +1133,37 @@ class RemoteExtension(Extension):
                 changed = True
         if changed:
             self._save_settings()
-            self._say("Orca Remote settings saved.")
+            if rejected_fingerprint:
+                self._say(
+                    "Orca Remote settings saved, except the fingerprint: it "
+                    f"was {rejected_fingerprint} characters, not 64. Select the "
+                    "old value with Control+A before pasting the new one."
+                )
+            else:
+                self._say("Orca Remote settings saved.")
             if not self._disabled:
                 # Settings change -> connect-affecting restart; the
                 # user deserves to hear the new join announce.
                 self._announced_join = False
                 self._peer_not_connected_announced = False
                 self._restart_transport()
+
+    def _reject_bad_fingerprint(self, result: dict[str, Any]) -> int:
+        """Normalize the dialog's fingerprint, dropping a malformed value.
+
+        Returns the length of a rejected value, or 0 when the value is
+        usable (or empty). The dialog pre-fills the field with the
+        stored pin, so pasting without selecting first appends to it and
+        yields a value that can never match; without this check the
+        connection just reported "fingerprint did not match" forever.
+        """
+
+        normalized = _normalize_fingerprint(str(result.get(SETTING_FINGERPRINT, "")))
+        if normalized and len(normalized) != _FINGERPRINT_CHARS:
+            result.pop(SETTING_FINGERPRINT, None)
+            return len(normalized)
+        result[SETTING_FINGERPRINT] = normalized
+        return 0
 
     def _get_setting(self, key: str) -> Any:
         return self._settings.get(key, DEFAULT_SETTINGS.get(key))
@@ -1221,7 +1280,9 @@ class RemoteExtension(Extension):
         channel = str(self._settings.get(SETTING_CHANNEL, "") or "")
         host = str(self._settings.get(SETTING_HOST, "") or "")
         port = int(self._settings.get(SETTING_PORT, 0) or 0)
-        fingerprint = str(self._settings.get(SETTING_FINGERPRINT, "") or "")
+        fingerprint = _normalize_fingerprint(
+            str(self._settings.get(SETTING_FINGERPRINT, "") or ""),
+        )
         role = str(self._settings.get(SETTING_ROLE, ROLE_CLIENT) or ROLE_CLIENT)
         connection_type = (
             CONNECTION_TYPE_SLAVE if role == ROLE_HOST else CONNECTION_TYPE_MASTER
@@ -1233,6 +1294,17 @@ class RemoteExtension(Extension):
 
         if not host or port <= 0 or not channel:
             self._say("Orca Remote not configured. Open Settings to set host, port, and channel key.")
+            return
+        if fingerprint and len(fingerprint) != _FINGERPRINT_CHARS:
+            # A malformed pin can never match. Dialing would just loop on
+            # "fingerprint did not match" with nothing to act on.
+            self._log(f"stored fingerprint has {len(fingerprint)} characters, not 64")
+            self._say(
+                "Orca Remote: the saved fingerprint is not 64 hex characters, "
+                "so the relay would refuse it. Open Settings with Orca+Ctrl+R "
+                "and paste the fingerprint again, selecting the old value with "
+                "Control+A first."
+            )
             return
 
         # Assign on this thread, start on the loop. Assigning from a
@@ -1441,22 +1513,15 @@ class RemoteExtension(Extension):
     def push_clipboard(self) -> bool:
         """Send the local clipboard text to the peer as set_clipboard_text.
 
-        Reads the local clipboard via the controller (GLib main
-        thread), then schedules the wire send. No-op (with spoken
-        feedback) if the transport is down or the clipboard is empty.
-        Wired to the remote menu in Phase 6; safe to call directly
-        too.
+        Reads the local clipboard (GLib main thread), then schedules the
+        wire send. No-op (with spoken feedback) if the transport is down
+        or the clipboard is empty.
         """
 
         if self._transport is None:
             self._say("Orca Remote: not connected; clipboard not pushed.")
             return True
-        try:
-            text = str(self.controller.get_clipboard_text() or "")
-        except Exception as error:  # pylint: disable=broad-except
-            self._log(f"get_clipboard_text failed: {error}")
-            self._say("Orca Remote: could not read clipboard.")
-            return True
+        text = self._read_clipboard_text()
         if not text:
             self._say("Orca Remote: clipboard is empty.")
             return True
@@ -1469,6 +1534,32 @@ class RemoteExtension(Extension):
         # the text itself; could be sensitive (passwords, etc.).
         self._say(f"Orca Remote: pushed clipboard ({len(text)} characters).")
         return True
+
+    def _read_clipboard_text(self) -> str:
+        """Read the clipboard, preferring the controller's helper.
+
+        The controller helper is the polite path (it goes through
+        whatever clipboard manager Orca uses), but some builds ship a
+        clipboard presenter without any way to read text, which makes
+        controller.get_clipboard_text() return "" no matter what is on
+        the clipboard. Falling back to Gtk keeps push working there.
+        """
+
+        try:
+            text = str(self.controller.get_clipboard_text() or "")
+        except Exception as error:  # pylint: disable=broad-except
+            self._log(f"get_clipboard_text failed: {error}")
+            text = ""
+        if text:
+            return text
+        clipboard = _gtk_clipboard()
+        if clipboard is None:
+            return text
+        try:
+            return str(clipboard.wait_for_text() or "")
+        except Exception as error:  # pylint: disable=broad-except
+            self._log(f"Gtk clipboard read failed: {error}")
+            return text
 
     def _render_inbound_braille_idle_cb(self, text: str) -> bool:
         """Apply an inbound braille frame to the local display.
@@ -1726,7 +1817,8 @@ class RemoteExtension(Extension):
             "Orca Remote: server fingerprint did not match. "
             "The fingerprint has been copied to the clipboard. "
             "Press Orca+Ctrl+R, focus the Server fingerprint field, "
-            "and paste with Control+V."
+            "press Control+A to select the old value, then paste with "
+            "Control+V."
         )
 
     def _copy_fingerprint_idle_cb(self, actual: str) -> bool:
@@ -1734,6 +1826,16 @@ class RemoteExtension(Extension):
             self.controller.set_clipboard_text(actual)
         except Exception as error:  # pylint: disable=broad-except
             self._log(f"set_clipboard_text failed: {error}")
+        # That call is a silent no-op when the build's clipboard
+        # presenter has no active manager (no GPaste/Klipper, presenter
+        # not yet activated), so also set it through Gtk: the
+        # announcement promises the value is on the clipboard.
+        clipboard = _gtk_clipboard()
+        if clipboard is not None:
+            try:
+                clipboard.set_text(actual, -1)
+            except Exception as error:  # pylint: disable=broad-except
+                self._log(f"Gtk clipboard write failed: {error}")
         return False  # one-shot
 
     # ---- helpers ---------------------------------------------------

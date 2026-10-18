@@ -189,6 +189,51 @@ drop is the right behavior. If it's persistent, check relay
 reachability (`ping`, `mtr`) and consider self-hosting closer to
 both peers.
 
+## "Pasting the fingerprint still gets refused"
+
+**Symptom.** The mismatch announcement copies the fingerprint to the
+clipboard; after pasting it into the settings field, the next connect
+still reports "fingerprint did not match" — often forever.
+
+**Root cause.** The Server fingerprint field is pre-filled with the
+stored (wrong) pin. Pasting without selecting first appends to it, so
+the saved value is 128 characters instead of 64 and can never match.
+The mismatch announcement used to say only "paste with Control+V".
+
+**Fix (0.9.6).**
+
+- The announcement now says: press **Control+A** to select the old
+  value, then paste.
+- A pasted value that is not 64 hex characters is refused when you
+  save, with a spoken reason, and the old pin is kept.
+- A malformed stored pin is refused before dialing with the same
+  explanation, instead of looping on "did not match".
+- The value is normalized on save (separators and upper case are fine).
+
+If you suspect the stored pin, check
+`~/.local/share/orca/orca-remote-settings.json`: `fingerprint` must be
+64 hex characters, or empty.
+
+Note that the fingerprint copy is also written straight through Gtk,
+because `controller.set_clipboard_text` is a silent no-op on builds
+whose clipboard presenter has no active manager (no GPaste or Klipper,
+presenter not yet activated) — before 0.9.6 the announcement could
+promise a clipboard value that was never set.
+
+## "Clipboard push says the clipboard is empty, but it is not"
+
+**Symptom.** Ctrl+Shift+Orca+C announces "clipboard is empty" while a
+copy from any application is clearly on the clipboard.
+
+**Root cause.** Orca 51.alpha (perf build, rev 92a603f) ships a
+`ClipboardPresenter` with no `get_text` method at all, so
+`controller.get_clipboard_text()` returns "" no matter what is on the
+clipboard.
+
+**Fix (0.9.6).** The extension reads through Gtk when the controller
+helper comes back empty. Same for the fingerprint copy, which now also
+writes through Gtk.
+
 ## "The extension shows up in Preferences but says invalid"
 
 **Symptom.** After unpacking `remote.orca-ext` into
