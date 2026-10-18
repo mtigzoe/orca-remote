@@ -143,7 +143,7 @@ class _PortalKeyboard:
 
             GLib, Gio = _load_gio()
             try:
-                self._bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+                self._bus = self._session_bus(GLib, Gio)
             except Exception as error:  # pylint: disable=broad-except
                 self.unavailable = True
                 self._fail(f"no session bus for the RemoteDesktop portal: {error}")
@@ -188,6 +188,32 @@ class _PortalKeyboard:
                 return False
             self._started = True
             return True
+
+    @staticmethod
+    def _session_bus(GLib: Any, Gio: Any) -> Any:
+        """Connect to the session bus without X11 autolaunch.
+
+        Gio.bus_get_sync falls back to dbus-launch when
+        DBUS_SESSION_BUS_ADDRESS is unset, which can block for a long
+        time -- and this call would then hold the injection worker (and
+        every queued key) behind it. Use the standard runtime socket
+        instead, and fail fast when there is none.
+        """
+
+        address = os.environ.get("DBUS_SESSION_BUS_ADDRESS")
+        if not address:
+            runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or GLib.get_user_runtime_dir()
+            socket_path = os.path.join(runtime_dir or "", "bus")
+            if not os.path.exists(socket_path):
+                raise RuntimeError("no session bus socket")
+            address = f"unix:path={socket_path}"
+        return Gio.DBusConnection.new_for_address_sync(
+            address,
+            Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT
+            | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION,
+            None,
+            None,
+        )
 
     def _request(self, method: str, params_factory: Callable[[str], Any]) -> dict:
         """Send one portal request and wait for its Response signal."""

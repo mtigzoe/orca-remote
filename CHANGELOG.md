@@ -18,6 +18,12 @@
 
 ### Fixed
 
+- Wayland portal backend: connect to the session bus without X11
+  autolaunch (`DBUS_SESSION_BUS_ADDRESS`, else `$XDG_RUNTIME_DIR/bus`).
+  `Gio.bus_get_sync` can block for a long time when no session bus is
+  announced, which held the injection worker -- and every queued key --
+  behind it. Found on serrebiradio.com, where the injector stalled on
+  the first key under weston instead of falling back to `xdotool`.
 - Legacy path: **the installer's sentinel rewrite broke two things.**
   It replaced every `"host"` / `"key"` literal in
   `orca-customizations.py`, which (a) rewrote the auto-connect check so
