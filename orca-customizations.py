@@ -164,8 +164,16 @@ if _has_config:
         try:
             transport.run()
         except Exception:
-            print("Error in thread")
-            traceback.print_exc()
+            # Orca daemonizes, so a print here is lost; keep the
+            # traceback where the rest of the plugin logs live.
+            _dbg("transport thread crashed:\n%s" % traceback.format_exc())
+
+    def _log_transport_connected():
+        _dbg("transport connected: %s channel=%r" % (
+            transport.address, transport.channel))
+
+    transport.callback_manager.register_callback(
+        'transport_connected', _log_transport_connected)
 
     t = threading.Thread(target=try_run_thread)
     t.daemon = True

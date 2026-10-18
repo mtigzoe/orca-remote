@@ -9,6 +9,14 @@
   `c`; both are accepted now. Found by pressing every legacy chord with
   xdotool against Orca 48.1 under Xvfb on serrebiradio.com.
 
+### Added
+
+- Legacy path: the transport thread now logs to
+  `~/.local/share/orca/orca-remote-debug.log` when it connects
+  (`transport connected: ...`) and when it crashes (with the traceback).
+  Both messages used to go to stdout, which Orca's daemonization
+  discards, so a failed connection was invisible.
+
 ## 0.9.7 -- 2026-10-17
 
 Host-side key injection now supports Wayland as well as Xorg.
