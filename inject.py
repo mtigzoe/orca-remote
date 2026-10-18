@@ -303,6 +303,11 @@ class KeyInjector:
         self._thread: threading.Thread | None = None
         self._portal = _PortalKeyboard(log)
         self._backend: str | None = None
+        # Backends that failed this session. These failures are
+        # persistent (ydotoold not running, portal absent, no uinput),
+        # so retrying them on every key would add their timeout to every
+        # keystroke before the next backend gets a turn.
+        self._failed: set[str] = set()
         # True once every backend failed; the caller should stop
         # preferring this module and use the controller instead.
         self.exhausted = False
@@ -362,9 +367,15 @@ class KeyInjector:
                     self._backend = backend
                     self._log(f"key injection backend: {backend}")
                 return True
+            self._failed.add(backend)
+            self._log(
+                f"key injection: {backend} failed; not trying it again this session"
+            )
         return False
 
     def _usable(self, backend: str, name: "str | None", evdev: "int | None") -> bool:
+        if backend in self._failed:
+            return False
         if backend == "xdotool":
             return bool(name) and shutil.which("xdotool") is not None
         if backend == "ydotool":
@@ -384,7 +395,7 @@ class KeyInjector:
             result = subprocess.run(
                 ["xdotool", "keydown" if pressed else "keyup", name],
                 capture_output=True,
-                timeout=5,
+                timeout=2,
             )
             return result.returncode == 0
         except Exception:  # pylint: disable=broad-except
@@ -397,7 +408,7 @@ class KeyInjector:
                 ["ydotool", "key", f"{evdev}:{1 if pressed else 0}"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                timeout=5,
+                timeout=2,
             )
             return result.returncode == 0
         except Exception:  # pylint: disable=broad-except

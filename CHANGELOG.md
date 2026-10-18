@@ -24,6 +24,11 @@
   announced, which held the injection worker -- and every queued key --
   behind it. Found on serrebiradio.com, where the injector stalled on
   the first key under weston instead of falling back to `xdotool`.
+- Injection backends that fail are not retried again in the session
+  (they are all persistent failures: no `ydotoold`, no portal, no
+  uinput). Before, a broken backend added its whole timeout to every
+  single keystroke before the next backend got a turn. Backend
+  subprocess timeouts are 2 s.
 - Legacy path: **the installer's sentinel rewrite broke two things.**
   It replaced every `"host"` / `"key"` literal in
   `orca-customizations.py`, which (a) rewrote the auto-connect check so
