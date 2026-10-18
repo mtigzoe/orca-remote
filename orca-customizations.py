@@ -330,7 +330,9 @@ def _get_remote_shortcut_match(event_self):
         ),
         (
             "clipboard",
-            {"c"},
+            # Shift makes the key name uppercase (keysym "C"): match both,
+            # or Ctrl+Shift+Orca+C can never dispatch.
+            {"c", "C"},
             ctrl_shift_orca,
             {"orca_remote_clipboard"},
             _push_clipboard,

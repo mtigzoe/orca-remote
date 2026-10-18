@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.8 -- 2026-10-17
+
+### Fixed
+
+- Legacy path: **Ctrl+Shift+Orca+C never dispatched.** With Shift held
+  the key name is `C`, and the shortcut matcher only accepted lowercase
+  `c`; both are accepted now. Found by pressing every legacy chord with
+  xdotool against Orca 48.1 under Xvfb on serrebiradio.com.
+
 ## 0.9.7 -- 2026-10-17
 
 Host-side key injection now supports Wayland as well as Xorg.
