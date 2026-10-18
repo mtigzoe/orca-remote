@@ -1,6 +1,7 @@
 """Exercise the portal worker against a real GLib context in isolation."""
 
 from pathlib import Path
+import importlib.util
 import subprocess
 import sys
 
@@ -8,6 +9,10 @@ import pytest
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="requires Linux GLib bindings")
+@pytest.mark.skipif(
+    importlib.util.find_spec("gi") is None,
+    reason="requires gi (PyGObject) bindings, absent on this interpreter",
+)
 def test_portal_wait_does_not_dispatch_orca_main_context():
     script = r'''
 import importlib.util
