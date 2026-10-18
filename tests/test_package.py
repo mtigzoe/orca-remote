@@ -166,3 +166,50 @@ def test_install_extension_script_unpacks_and_approves(tmp_path):
     assert (installed / "remote.py").is_file()
     assert log.read_text(encoding="utf-8").strip() == "--approve-extension remote"
     assert "orca --replace" in install.stdout
+
+
+def _load_legacy_installer():
+    import importlib.machinery
+    import importlib.util
+
+    # The installer has no .py suffix, so it needs an explicit loader.
+    loader = importlib.machinery.SourceFileLoader(
+        "orca_remote_install", str(ROOT / "install"),
+    )
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def test_legacy_installer_enables_auto_connect(tmp_path, monkeypatch):
+    """The install argument rewrite must not defeat its own check.
+
+    The installer rewrites the "host"/"key" sentinels, including the
+    line that used to compare against them, so auto-connect silently
+    stayed off. It now flips ORCA_REMOTE_AUTO_CONNECT instead.
+    """
+
+    installer = _load_legacy_installer()
+    monkeypatch.chdir(ROOT)
+    dest = tmp_path / "orca-customizations.py"
+
+    installer.make_orca_customizations(str(dest), "127.0.0.1", "6837", "test4120")
+
+    text = dest.read_text(encoding="utf-8")
+    assert 'YOUR_NVDAREMOTE_SERVER_ADDRESS = "127.0.0.1"' in text
+    assert 'YOUR_NVDAREMOTE_KEY = "test4120"' in text
+    assert "ORCA_REMOTE_AUTO_CONNECT = True" in text
+    assert 'YOUR_NVDAREMOTE_SERVER_ADDRESS != "127.0.0.1"' not in text
+
+
+def test_legacy_installer_without_args_keeps_auto_connect_off(tmp_path, monkeypatch):
+    installer = _load_legacy_installer()
+    monkeypatch.chdir(ROOT)
+    dest = tmp_path / "orca-customizations.py"
+
+    installer.make_orca_customizations(str(dest))
+
+    text = dest.read_text(encoding="utf-8")
+    assert "ORCA_REMOTE_AUTO_CONNECT = False" in text
+    assert 'YOUR_NVDAREMOTE_SERVER_ADDRESS = "host"' in text

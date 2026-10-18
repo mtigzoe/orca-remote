@@ -19,6 +19,13 @@ def make_orca_customizations(destfile, nvda_remote_host=None, nvda_remote_port=N
             customizations = customizations.replace("6837", nvda_remote_port)
         if nvda_remote_key:
             customizations = replace_string(customizations, "key", nvda_remote_key)
+        # The sentinel rewrite above also hits the auto-connect check, so
+        # the plugin asks for this flag instead.
+        if nvda_remote_host and nvda_remote_key:
+            customizations = customizations.replace(
+                "ORCA_REMOTE_AUTO_CONNECT = False",
+                "ORCA_REMOTE_AUTO_CONNECT = True",
+            )
         with open(destfile, "w") as f2:
             f2.write(customizations)
 

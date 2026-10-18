@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- Legacy path: **`./install <server> <port> <key>` never auto-connected.**
+  The installer rewrites every `"host"` / `"key"` literal in
+  `orca-customizations.py`, including the auto-connect check itself, so
+  `_has_config` always evaluated false and the transport thread never
+  started. The installer now sets a dedicated
+  `ORCA_REMOTE_AUTO_CONNECT` flag instead. Regression-tested in
+  `tests/test_package.py`.
 - Legacy path: **Ctrl+Shift+Orca+C never dispatched.** With Shift held
   the key name is `C`, and the shortcut matcher only accepted lowercase
   `c`; both are accepted now. Found by pressing every legacy chord with

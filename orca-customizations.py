@@ -8,6 +8,11 @@ YOUR_ORCA_SCRIPTS_FOLDER = os.path.expanduser("~/.local/share/orca/orca-scripts"
 YOUR_NVDAREMOTE_SERVER_ADDRESS = "host"
 YOUR_NVDAREMOTE_SERVER_PORT = 6837
 YOUR_NVDAREMOTE_KEY = "key"
+# The installer rewrites the three sentinel values above, so the
+# sentinels themselves cannot tell "configured" from "not" (the rewrite
+# would hit the comparison too). It flips this flag instead when it is
+# given a server, port and channel key.
+ORCA_REMOTE_AUTO_CONNECT = False
 
 # Make the NVDA Remote modules importable
 sys.path.insert(0, YOUR_ORCA_SCRIPTS_FOLDER)
@@ -152,14 +157,11 @@ controller = RemoteController(transport, speech_callback=_speak_message)
 
 
 # ---- Connection Thread ----
-# Only auto-connect if real connection details were provided (not the
-# install-time sentinel values). Otherwise the user connects via the
-# connect dialog (Orca+Alt+PageUp).
+# Only auto-connect when the installer was given real connection
+# details. Otherwise the user connects via the connect dialog
+# (Orca+Alt+PageUp).
 
-_has_config = (YOUR_NVDAREMOTE_SERVER_ADDRESS != "host"
-               and YOUR_NVDAREMOTE_KEY != "key")
-
-if _has_config:
+if ORCA_REMOTE_AUTO_CONNECT:
     def try_run_thread():
         try:
             transport.run()
