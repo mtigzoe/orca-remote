@@ -136,6 +136,7 @@ class RemoteTransport:
         on_message: Callable[[dict], Awaitable[None]],
         on_status: Callable[[str], None] | None = None,
         on_fingerprint_mismatch: Callable[[str], None] | None = None,
+        on_disconnected: Callable[[], None] | None = None,
     ) -> None:
         self._host = host
         self._port = port
@@ -145,6 +146,7 @@ class RemoteTransport:
         self._on_message = on_message
         self._on_status = on_status or (lambda _msg: None)
         self._on_fp_mismatch = on_fingerprint_mismatch or (lambda _actual: None)
+        self._on_disconnected = on_disconnected or (lambda: None)
 
         self._stop_event: asyncio.Event | None = None
         self._task: asyncio.Task | None = None
@@ -197,6 +199,8 @@ class RemoteTransport:
         inbound key reaction). Dropping speech-and-cancel frames is
         the right trade-off in that regime: by the time the buffer
         clears the audio would be stale anyway.
+        Key frames are exempt: both halves of a press/release pair must
+        reach the peer to avoid stuck modifiers.
         """
 
         writer = self._writer
@@ -210,7 +214,9 @@ class RemoteTransport:
             )
         except Exception:  # pylint: disable=broad-except
             buffered = 0
-        if buffered > _MAX_WRITE_BUFFER:
+        # Never lose one half of a key pair: a dropped release sticks
+        # Ctrl/Alt on the remote until that peer disconnects.
+        if buffered > _MAX_WRITE_BUFFER and message.get("type") != protocol.MSG_KEY:
             self._dropped_outbound += 1
             # Log on the first drop in each "episode" of congestion
             # so the user gets one notice rather than a flood; the
@@ -331,7 +337,10 @@ class RemoteTransport:
             if self._writer is writer:
                 self._writer = None
             try:
-                writer.close()
-                await writer.wait_closed()
-            except Exception:  # pylint: disable=broad-except
-                pass
+                self._on_disconnected()
+            finally:
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                except Exception:  # pylint: disable=broad-except
+                    pass

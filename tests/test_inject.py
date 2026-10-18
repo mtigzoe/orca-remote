@@ -209,8 +209,25 @@ class TestRemoteSynthSelection:
         monkeypatch.setattr(mod, "is_wayland_session", lambda: False)
         monkeypatch.setattr(mod, "resolve_keysym", lambda keysym: ("a", 30))
 
-        assert instance._synth(0x61, True) is False
+        assert instance._synth(0x61, True) is True
         instance._injector.send.assert_called_once()
+
+    def test_controller_failure_still_taps_and_tracks_the_fallback_key(self, monkeypatch):
+        mod = _load_remote_module()
+        instance = self._instance(mod)
+        instance._pressed_keysyms = set()
+        instance._chord_matches_own_command = lambda _key: False
+        instance.controller.synthesize_key_event.return_value = False
+        monkeypatch.setattr(mod, "is_wayland_session", lambda: False)
+        monkeypatch.setattr(mod, "resolve_keysym", lambda _key: ("a", 30))
+
+        instance._synthesize_key_idle_cb(0x61, True)
+
+        assert instance._injector.send.call_args_list == [
+            mock.call(0x61, True, name="a", evdev=30),
+            mock.call(0x61, False, name="a", evdev=30),
+        ]
+        assert instance._pressed_keysyms == {0x61}
 
     def test_exhausted_injector_never_preempts_on_wayland(self, monkeypatch):
         mod = _load_remote_module()

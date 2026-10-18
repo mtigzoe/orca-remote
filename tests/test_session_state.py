@@ -154,6 +154,27 @@ def test_peer_leaving_releases_keys_it_held():
     m._release_held_keys.assert_called_once()
 
 
+def test_lost_link_releases_keys_after_pending_key_callbacks(monkeypatch):
+    mod = _load_remote_module()
+    m = _master(mod)
+    m.controller = mock.Mock()
+    m.controller.synthesize_key_event.return_value = True
+    m._chord_matches_own_command = lambda _key: False
+    pending = [(m._synthesize_key_idle_cb, (0xffe3, True))]
+    monkeypatch.setattr(mod.GLib, "idle_add", lambda cb, *args: pending.append((cb, args)), raising=False)
+
+    m._on_transport_disconnected()
+    while pending:
+        callback, args = pending.pop(0)
+        callback(*args)
+
+    assert m._focus_on_remote is False
+    assert m._pressed_keysyms == set()
+    assert m.controller.synthesize_key_event.call_args_list == [
+        mock.call(0xffe3, True), mock.call(0xffe3, False),
+    ]
+
+
 def test_legacy_host_releases_keys_left_down_by_a_dropped_link(monkeypatch):
     import sys
     from pathlib import Path

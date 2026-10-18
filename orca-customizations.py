@@ -146,10 +146,19 @@ transport = RelayTransport(
 def _speak_message(text):
     """Speak a message through Orca's speech system."""
     try:
+        from gi.repository import GLib
+        GLib.idle_add(_speak_message_idle_cb, text)
+    except Exception:
+        print("Orca Remote: %s" % text)
+
+
+def _speak_message_idle_cb(text):
+    try:
         import orca.speech as speech
         speech.speak(text)
     except Exception:
         print("Orca Remote: %s" % text)
+    return False
 
 # ---- Remote Controller ----
 

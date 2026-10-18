@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.9.9 -- 2026-10-17
+
+### Fixed
+
+- Reject extension archives whose manifest names anything except `remote`.
+  A crafted name could previously escape the extension directory and replace
+  another directory containing a manifest.
+- Portal consent waits now use a private GLib context. The injection worker
+  previously dispatched callbacks from Orca's main context, risking GTK and
+  Orca calls on the wrong thread.
+- When XTEST fails and external injection accepts a key, report that acceptance
+  so ordinary keys receive their matching release and duplicate presses stay
+  suppressed. Previously a successful fallback could leave a letter held down.
+- Relay loss releases injected modifiers after queued presses, removes client
+  keyboard grabs, and returns client focus to the local machine. Notify cleanup
+  before waiting for TLS shutdown, including when shutdown is later cancelled.
+  Reconnecting hosts retain the existing suppression of repeated join messages.
+- Preserve key frames during outbound speech congestion so dropping a modifier
+  release cannot leave Ctrl or Alt held on the remote machine.
+- Remote cancel and pause frames obey the same focus and mute gate as speech.
+  A muted remote, or a remote while focused locally, no longer interrupts local
+  Orca speech.
+- Received clipboard text uses the same Gtk fallback as fingerprint copying,
+  covering missing controller helpers and helpers that silently do nothing.
+- Legacy transport discards partial frames on EOF, shuts down the socket before
+  joining a blocked sender, and ignores non-string message types instead of
+  killing its reader thread.
+- Legacy installation preserves literal backslashes and newlines in connection
+  settings. Regular-expression replacement previously changed channel keys or
+  produced an invalid Python customization file.
+- Legacy TLS reads and writes are serialized without holding the socket lock
+  while waiting for application data. Concurrent OpenSSL calls corrupted TLS
+  records in live SSH testing; TLS session tickets also require nonblocking
+  reads and draining already-decrypted data before waiting on the socket.
+- Legacy connection announcements run on GLib instead of initializing Orca's
+  speech server from the transport thread during startup.
+
+### Tests
+
+- Regression tests cover each fix, including a real GLib worker-context probe.
+- Windows: 207 passed, two Linux-only checks skipped. WSL: 209 passed.
+- Live WSL Orca 51.alpha: pinned TLS, speech mirroring, fallback key taps,
+  clipboard, client forwarding handlers, focus/mute gates, and link-loss cleanup.
+- Live SSH Orca 48.1: legacy speech, key injection, physical Orca+Alt+Tab in both
+  directions, malformed-frame recovery, and held-key release on relay loss.
+- Deployed relay on serrebiradio.com, through SSH: both roles, pinned TLS,
+  speech, key press/release pairs, and peer-leave notifications.
+
 ## 0.9.8 -- 2026-10-17
 
 ### Added

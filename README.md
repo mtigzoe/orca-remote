@@ -191,6 +191,9 @@ Legacy shortcuts:
 
 Use the modern extension when possible. The legacy path exists for older Orca installations and compatibility testing.
 
+The legacy transport encrypts traffic but does not verify the relay certificate.
+Use the modern extension's fingerprint pinning when relay authentication is required.
+
 ## Run and test from source
 
 Run the pure-function tests:

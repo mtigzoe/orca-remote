@@ -68,6 +68,8 @@ with tempfile.TemporaryDirectory(prefix="orca-remote-install-") as tmp:
     if not manifest.is_file():
         sys.exit("error: archive has no manifest.toml at the top level")
     name = str(tomllib.loads(manifest.read_text(encoding="utf-8"))["extension"]["name"])
+    if name != "remote":
+        sys.exit("error: extension name must be 'remote'")
 
     dest = extensions_dir / name
     if dest.exists():

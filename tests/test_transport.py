@@ -14,6 +14,7 @@ import ssl
 import sys
 import types
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -119,6 +120,20 @@ class TestFingerprintHelpers:
 
 
 class TestRemoteTransportSend:
+    def test_congestion_does_not_drop_a_key_release(self):
+        transport_mod = _load_transport_module()
+        remote = transport_mod.RemoteTransport(
+            host="example.invalid", port=6837, channel="key", fingerprint="aa",
+            connection_type="master", on_message=_noop_message,
+        )
+        writer = FakeWriter(buffered=transport_mod._MAX_WRITE_BUFFER + 1)
+        remote._writer = writer
+        message = {"type": "key", "vk_code": 0x11, "pressed": False}
+
+        asyncio.run(remote.send(message))
+
+        assert writer.writes == [transport_mod.protocol.encode(message)]
+
     def test_send_without_writer_is_noop(self):
         transport_mod = _load_transport_module()
         statuses: list[str] = []
@@ -198,8 +213,45 @@ class ResettingReader:
 
 
 class TestRemoteTransportConnection:
+    def test_disconnect_notification_does_not_wait_for_tls_close(self, monkeypatch):
+        transport_mod = _load_transport_module()
+        der = b"relay certificate"
+        writer = FakeWriter()
+        writer.get_extra_info = FakeFingerprintWriter(FakeSSLObject(der)).get_extra_info
+        disconnected = mock.Mock()
+
+        async def run_once():
+            closing = asyncio.Event()
+            async def wait_closed():
+                closing.set()
+                await asyncio.Event().wait()
+            writer.wait_closed = wait_closed
+            async def open_connection(*_args, **_kwargs):
+                return ResettingReader(), writer
+            monkeypatch.setattr(transport_mod.asyncio, "open_connection", open_connection)
+            remote = transport_mod.RemoteTransport(
+                host="example.invalid", port=6837, channel="key",
+                fingerprint=hashlib.sha256(der).hexdigest(), connection_type="master",
+                on_message=_noop_message, on_disconnected=disconnected,
+            )
+            remote._stop_event = asyncio.Event()
+            task = asyncio.create_task(remote._connect_and_read())
+            await asyncio.wait_for(closing.wait(), timeout=1)
+            try:
+                assert remote.connected is False
+                disconnected.assert_called_once_with()
+            finally:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+        asyncio.run(run_once())
+
     def test_reset_connection_drops_the_dead_writer(self, monkeypatch):
         transport_mod = _load_transport_module()
+        disconnected = mock.Mock()
         der = b"relay certificate"
         writer = FakeWriter()
         writer.get_extra_info = FakeFingerprintWriter(FakeSSLObject(der)).get_extra_info
@@ -215,6 +267,7 @@ class TestRemoteTransportConnection:
             fingerprint=hashlib.sha256(der).hexdigest(),
             connection_type="master",
             on_message=_noop_message,
+            on_disconnected=disconnected,
         )
 
         async def run_once():
@@ -228,6 +281,7 @@ class TestRemoteTransportConnection:
 
         assert remote._writer is None
         assert writer.closed is True
+        disconnected.assert_called_once_with()
 
 
 class TestRemoteTransportStop:

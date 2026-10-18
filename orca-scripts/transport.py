@@ -40,6 +40,8 @@ class TCPTransport(Transport):
 		self.address = address
 		self.server_sock = None
 		self.queue_thread = None
+		self._io_lock = threading.Lock()
+		self._read_wants_write = False
 		self.timeout = timeout
 		self.reconnector_thread = ConnectorThread(self)
 
@@ -56,15 +58,24 @@ class TCPTransport(Transport):
 		self.queue_thread.daemon = True
 		self.queue_thread.start()
 		while self.server_sock is not None:
+			sock = self.server_sock
+			if sock is None:
+				break
 			try:
-				readers, writers, error = select.select([self.server_sock], [], [self.server_sock])
-			except socket.error:
+				with self._io_lock:
+					pending = sock.pending()
+				if pending:
+					readers, writers, error = [sock], [], []
+				else:
+					readers, writers, error = select.select(
+						[sock], [sock] if self._read_wants_write else [], [sock])
+			except (OSError, ValueError, TypeError):
 				self.buffer = b''
 				break
-			if self.server_sock in error:
+			if sock in error:
 				self.buffer = b""
 				break
-			if self.server_sock in readers:
+			if sock in readers or sock in writers:
 				try:
 					self.handle_server_data()
 				except socket.error:
@@ -90,11 +101,30 @@ class TCPTransport(Transport):
 		# This approach may be problematic:
 		# See also server.py handle_data in class Client.
 		buffSize = 16384
-		data = self.buffer + self.server_sock.recv(buffSize)
-		self.buffer = b''
-		if not data:
+		sock = self.server_sock
+		if sock is None:
+			return
+		# OpenSSL calls must not overlap across the reader/sender threads.
+		# A TLS session ticket can make select readable without any app
+		# data: never hold the lock in a blocking recv while join waits.
+		with self._io_lock:
+			timeout = sock.gettimeout()
+			sock.setblocking(False)
+			self._read_wants_write = False
+			try:
+				chunk = sock.recv(buffSize)
+			except ssl.SSLWantReadError:
+				return
+			except ssl.SSLWantWriteError:
+				self._read_wants_write = True
+				return
+			finally:
+				sock.settimeout(timeout)
+		if not chunk:
 			self._disconnect()
 			return
+		data = self.buffer + chunk
+		self.buffer = b''
 		if b'\n' not in data:
 			self.buffer += data
 			return
@@ -111,7 +141,7 @@ class TCPTransport(Transport):
 		except ValueError:
 			log.warning("dropped malformed line %r" % line[:200])
 			return
-		if not isinstance(obj, dict) or 'type' not in obj:
+		if not isinstance(obj, dict) or not isinstance(obj.get('type'), str):
 			return
 		callback = "msg_"+obj['type']
 		del obj['type']
@@ -122,8 +152,12 @@ class TCPTransport(Transport):
 			item = self.queue.get()
 			if item is None:
 				return
+			sock = self.server_sock
+			if sock is None:
+				return
 			try:
-				self.server_sock.sendall(item)
+				with self._io_lock:
+					sock.sendall(item)
 			except socket.error:
 				return
 
@@ -137,18 +171,25 @@ class TCPTransport(Transport):
 		# run() clears `connected` before calling this, so guard on what is
 		# still open instead; checking the flag left the socket and the
 		# sender thread behind after every dropped connection.
+		self.connected = False
+		self.buffer = b''
+		sock = self.server_sock
+		self.server_sock = None
+		if sock is not None:
+			try:
+				sock.shutdown(socket.SHUT_RDWR)
+			except Exception:
+				pass
+			try:
+				sock.close()
+			except Exception:
+				pass
 		if self.queue_thread is not None:
 			self.queue.put(None)
 			if self.queue_thread is not threading.current_thread():
 				self.queue_thread.join()
 			self.queue_thread = None
 		clear_queue(self.queue)
-		if self.server_sock is not None:
-			try:
-				self.server_sock.close()
-			except Exception:
-				pass
-			self.server_sock = None
 
 	def close(self):
 		self.callback_manager.call_callbacks('transport_closing')

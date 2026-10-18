@@ -1339,6 +1339,7 @@ class RemoteExtension(Extension):
             on_message=self._on_message,
             on_status=self._on_status,
             on_fingerprint_mismatch=self._on_fingerprint_mismatch,
+            on_disconnected=self._on_transport_disconnected,
         )
         self._transport = transport
         self._loop.call_soon_threadsafe(transport.start)
@@ -1394,7 +1395,7 @@ class RemoteExtension(Extension):
             # pause (pause_speech). Screen-reader use cases treat both
             # as "shut up right now"; we don't have a pause-and-resume
             # surface so cancel-equivalent is the right behavior.
-            if self._current_role() == ROLE_CLIENT:
+            if not self._inbound_speech_drop_reason():
                 GLib.idle_add(self._interrupt_speech_idle_cb)
         elif msg_type == protocol.MSG_CHANNEL_JOINED:
             if self._announced_join:
@@ -1609,10 +1610,7 @@ class RemoteExtension(Extension):
     def _set_clipboard_idle_cb(self, text: str) -> bool:
         """Apply an inbound clipboard text on the GLib main thread."""
 
-        try:
-            self.controller.set_clipboard_text(text)
-        except Exception as error:  # pylint: disable=broad-except
-            self._log(f"set_clipboard_text failed: {error}")
+        if not self._write_clipboard_text(text):
             return False
         # Brief spoken cue so the user knows the peer pushed something.
         # Length only -- the text itself could be a password.
@@ -1717,6 +1715,7 @@ class RemoteExtension(Extension):
         if not ok and injector is not None and not injector.exhausted:
             name, evdev = resolve_keysym(keysym)
             injector.send(keysym, pressed, name=name, evdev=evdev)
+            return True
         return ok
 
     def _synthesize_key_idle_cb(self, keysym: int, pressed: bool) -> bool:
@@ -1843,12 +1842,16 @@ class RemoteExtension(Extension):
         AT-SPI device is gone we swallow the error.
         """
 
-        if not self._pressed_keysyms:
-            return
+        # Snapshot on GLib after any already-queued presses have run.
+        GLib.idle_add(self._release_held_keys_idle_cb)
+
+    def _release_held_keys_idle_cb(self) -> bool:
         held = sorted(self._pressed_keysyms)
-        self._log(f"releasing {len(held)} held keysym(s) on shutdown")
+        if held:
+            self._log(f"releasing {len(held)} held keysym(s) on shutdown")
         for keysym in held:
-            GLib.idle_add(self._synthesize_key_idle_cb, keysym, False)
+            self._synthesize_key_idle_cb(keysym, False)
+        return False
 
     def _current_role(self) -> str:
         role = str(self._settings.get(SETTING_ROLE, ROLE_CLIENT) or ROLE_CLIENT)
@@ -1856,6 +1859,21 @@ class RemoteExtension(Extension):
 
     def _on_status(self, status: str) -> None:
         self._log(f"transport: {status}")
+
+    def _on_transport_disconnected(self) -> None:
+        GLib.idle_add(self._transport_disconnected_idle_cb)
+
+    def _transport_disconnected_idle_cb(self) -> bool:
+        was_remote = self._focus_on_remote
+        self._leave_remote_focus()
+        self._release_held_keys_idle_cb()
+        self._peer_not_connected_announced = False
+        self._last_outbound_speech = ""
+        self._last_outbound_braille = ("", -2)
+        self._sent_braille_info = False
+        if was_remote:
+            self._say("Orca Remote connection lost. Controlling local machine.")
+        return False
 
     def _on_fingerprint_mismatch(self, actual: str) -> None:
         # Surface the fingerprint we actually saw so the user can
@@ -1874,8 +1892,15 @@ class RemoteExtension(Extension):
         )
 
     def _copy_fingerprint_idle_cb(self, actual: str) -> bool:
+        self._write_clipboard_text(actual)
+        self._write_fingerprint_file(actual)
+        return False  # one-shot
+
+    def _write_clipboard_text(self, text: str) -> bool:
+        copied = False
         try:
-            self.controller.set_clipboard_text(actual)
+            self.controller.set_clipboard_text(text)
+            copied = True
         except Exception as error:  # pylint: disable=broad-except
             self._log(f"set_clipboard_text failed: {error}")
         # That call is a silent no-op when the build's clipboard
@@ -1885,11 +1910,11 @@ class RemoteExtension(Extension):
         clipboard = _gtk_clipboard()
         if clipboard is not None:
             try:
-                clipboard.set_text(actual, -1)
+                clipboard.set_text(text, -1)
+                copied = True
             except Exception as error:  # pylint: disable=broad-except
                 self._log(f"Gtk clipboard write failed: {error}")
-        self._write_fingerprint_file(actual)
-        return False  # one-shot
+        return copied
 
     def _write_fingerprint_file(self, actual: str) -> str:
         """Save the last-seen fingerprint for manual copying.

@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from unittest import mock
 
+import pytest
+
 from tests.test_bypass_chords import _load_remote_module
 
 
@@ -20,6 +22,21 @@ def _new_message_instance(mod):
     instance._dropped_nonstring_items = 0
     instance._handle_inbound_key = mock.AsyncMock()
     return instance
+
+
+@pytest.mark.parametrize("msg_type", ["cancel", "pause_speech"])
+@pytest.mark.parametrize("focus,muted", [(False, False), (True, True), (True, False)])
+def test_remote_interrupt_obeys_the_speech_gate(monkeypatch, msg_type, focus, muted):
+    mod = _load_remote_module()
+    instance = _new_message_instance(mod)
+    instance._focus_on_remote = focus
+    instance._inbound_speech_muted = muted
+    idle = mock.Mock()
+    monkeypatch.setattr(mod.GLib, "idle_add", idle, raising=False)
+
+    asyncio.run(instance._on_message({"type": msg_type}))
+
+    assert idle.call_count == int(focus and not muted)
 
 
 class TestConnectionMessages:

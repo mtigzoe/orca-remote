@@ -218,11 +218,22 @@ class _PortalKeyboard:
     def _request(self, method: str, params_factory: Callable[[str], Any]) -> dict:
         """Send one portal request and wait for its Response signal."""
 
+        GLib, _Gio = _load_gio()
+        context = GLib.MainContext.new()
+        context.push_thread_default()
+        try:
+            return self._request_on_context(method, params_factory, context)
+        finally:
+            context.pop_thread_default()
+
+    def _request_on_context(
+        self, method: str, params_factory: Callable[[str], Any], context: Any,
+    ) -> dict:
         GLib, Gio = _load_gio()
         token = self._new_token(method.lower())
         expected_path = self._request_path(token)
         result: dict[str, Any] = {"done": False, "response": None, "results": None}
-        loop = GLib.MainLoop()
+        loop = GLib.MainLoop.new(context, False)
 
         def on_response(
             _connection, _sender, _path, _iface, _signal, parameters, _user_data,
@@ -239,12 +250,14 @@ class _PortalKeyboard:
                 expected_path, None, Gio.DBusSignalFlags.NONE, on_response, None,
             ),
         ]
-        timeout_id = GLib.timeout_add_seconds(_PORTAL_CONSENT_TIMEOUT_SECONDS, loop.quit)
+        timeout = GLib.timeout_source_new_seconds(_PORTAL_CONSENT_TIMEOUT_SECONDS)
+        timeout.set_callback(lambda *_args: loop.quit())
+        timeout.attach(context)
         try:
             reply = self._bus.call_sync(
                 PORTAL_BUS_NAME, PORTAL_OBJECT_PATH, PORTAL_REMOTE_DESKTOP_IFACE,
                 method, params_factory(token), GLib.VariantType.new("(o)"),
-                Gio.DBusCallFlags.NONE, 30000, None,
+                Gio.DBusCallFlags.NONE, _PORTAL_CALL_TIMEOUT_MS, None,
             )
             request_path = reply.unpack()[0]
             if request_path != expected_path:
@@ -256,7 +269,7 @@ class _PortalKeyboard:
                 loop.run()
         finally:
             try:
-                GLib.source_remove(timeout_id)
+                timeout.destroy()
             except Exception:  # pylint: disable=broad-except
                 pass
             for subscription in subscriptions:

@@ -46,6 +46,18 @@ def _instance(mod):
 
 
 class TestClipboardPush:
+    def test_receiving_clipboard_uses_gtk_when_controller_has_no_helper(self, monkeypatch):
+        mod = _load_remote_module()
+        instance = _instance(mod)
+        instance.controller = mock.Mock()
+        instance.controller.set_clipboard_text.side_effect = AttributeError("no clipboard helper")
+        clipboard = _FakeClipboard()
+        monkeypatch.setattr(mod, "_gtk_clipboard", lambda: clipboard)
+
+        instance._set_clipboard_idle_cb("remote clipboard")
+
+        assert clipboard.written == ["remote clipboard"]
+
     """push_clipboard must not depend on the controller's read helper."""
 
     def test_falls_back_to_gtk_when_the_controller_returns_nothing(self):

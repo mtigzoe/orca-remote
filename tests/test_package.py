@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 import re
 import tomllib
+import zipfile
 
 import pytest
 
@@ -182,6 +183,29 @@ def _load_legacy_installer():
     return module
 
 
+@pytest.mark.parametrize("name", ["../victim", "absolute", "other-extension"])
+def test_installer_rejects_manifest_names_outside_remote(tmp_path, name):
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "manifest.toml").write_text("keep me", encoding="utf-8")
+    if name == "absolute":
+        name = victim.as_posix()
+    archive = tmp_path / "bad.orca-ext"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("manifest.toml", '[extension]\nname = ' + repr(name) + '\n')
+    script = (ROOT / "install-extension").read_text(encoding="utf-8")
+    unpacker = script.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+
+    result = subprocess.run(
+        [sys.executable, "-c", unpacker, str(archive), str(tmp_path / "extensions")],
+        capture_output=True, text=True,
+    )
+
+    assert result.returncode != 0
+    assert "extension name must be 'remote'" in result.stderr
+    assert (victim / "manifest.toml").read_text(encoding="utf-8") == "keep me"
+
+
 def test_legacy_installer_enables_auto_connect(tmp_path, monkeypatch):
     """The install argument rewrite must not defeat its own check.
 
@@ -217,3 +241,21 @@ def test_legacy_installer_without_args_keeps_auto_connect_off(tmp_path, monkeypa
     text = dest.read_text(encoding="utf-8")
     assert "ORCA_REMOTE_AUTO_CONNECT = False" in text
     assert 'YOUR_NVDAREMOTE_SERVER_ADDRESS = "host"' in text
+
+
+def test_legacy_installer_preserves_backslashes_and_newlines_in_settings(tmp_path, monkeypatch):
+    installer = _load_legacy_installer()
+    monkeypatch.chdir(ROOT)
+    dest = tmp_path / "orca-customizations.py"
+    secret = "channel\\1\nwith\\backslashes"
+
+    installer.make_orca_customizations(str(dest), "localhost", "6837", secret)
+
+    tree = ast.parse(dest.read_text(encoding="utf-8"))
+    assignments = {
+        node.targets[0].id: ast.literal_eval(node.value)
+        for node in tree.body
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
+        and isinstance(node.targets[0], ast.Name)
+    }
+    assert assignments["YOUR_NVDAREMOTE_KEY"] == secret

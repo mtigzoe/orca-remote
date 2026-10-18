@@ -18,7 +18,7 @@ def replace_setting(text, name, literal):
 
     pattern = re.compile(r"(?m)^%s = .*$" % re.escape(name))
     replacement = "%s = %s" % (name, literal)
-    return pattern.sub(replacement, text, count=1)
+    return pattern.sub(lambda _match: replacement, text, count=1)
 
 
 def make_orca_customizations(destfile, nvda_remote_host=None, nvda_remote_port=None, nvda_remote_key=None):
