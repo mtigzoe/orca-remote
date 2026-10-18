@@ -163,5 +163,5 @@ def test_install_extension_script_unpacks_and_approves(tmp_path):
     assert (installed / "manifest.toml").is_file()
     assert (installed / "__init__.py").is_file()
     assert (installed / "remote.py").is_file()
-    assert log.read_text(encoding="utf-8").strip() == "approve-extension remote"
+    assert log.read_text(encoding="utf-8").strip() == "--approve-extension remote"
     assert "orca --replace" in install.stdout
