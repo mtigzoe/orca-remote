@@ -25,6 +25,7 @@ REQUIRED_EXTENSION_FILES = {
     "protocol.py",
     "keymap.py",
     "braille_table.py",
+    "inject.py",
     "LICENSE",
     "vendor/orca_ext_utils/keyboard_grab.py",
 }

@@ -29,7 +29,11 @@ File transfer is not implemented — use clipboard sync for text, or a separate 
 - Python 3.12 or newer.
 - GTK 3 and GLib, normally present with Orca.
 - A reachable NVDA Remote v2 relay, such as `nvdaremote.com:6837`.
-- Optional, for legacy mode only: `xdotool`, `ydotool`, `sox`, `xclip`.
+- Optional, host-mode key injection: `xdotool` (Xorg and XWayland) or
+  `ydotool` (any session, needs `ydotoold` running). On GNOME/KDE
+  Wayland the extension uses the XDG RemoteDesktop portal instead, with
+  a one-time keyboard-control prompt.
+- Optional, for legacy mode only: `sox`, `xclip`.
 
 Some features depend on newer Orca controller hooks:
 
@@ -78,17 +82,38 @@ Open settings with **Orca + Ctrl + R**, enter the relay host, port, channel key,
 
 ## Which Orca builds do what
 
-| Orca build | Speech mirroring | Remote key control | Braille mirroring |
-|---|---|---|---|
-| Released 51.1 | yes, both directions | no | no |
-| Perf branch or newer main | yes | yes | yes |
+| Orca build | Speech mirroring | Being controlled (keys) | Controlling (keys) | Braille mirroring |
+|---|---|---|---|---|
+| Released 51.1 | yes, both directions | yes, via xdotool / portal / ydotool | no | no |
+| Perf branch or newer main | yes | yes, XTEST first, external backends as fallback | yes | yes |
 
 Released Orca's controller has no `subscribe_speech_emitted`,
 `subscribe_braille_emitted`, `subscribe_keyboard_event`,
 `synthesize_key_event` or `display_braille_text`. The extension still
 loads there and mirrors speech through `Extension.on_speech_output`;
 the missing features are logged and disabled rather than crashing.
-Key forwarding needs a build with those controller hooks.
+Key forwarding needs a build with those controller hooks; key
+*injection* (being controlled) uses the external backends instead.
+
+## Wayland and Xorg
+
+Host-side key injection picks a backend per session:
+
+- **Xorg**: `controller.synthesize_key_event` (XTEST) first, then
+  `xdotool`, `ydotool`, and the RemoteDesktop portal.
+- **Wayland**: `ydotool` first (it reaches native Wayland clients),
+  then the XDG RemoteDesktop portal (GNOME/KDE ask once for keyboard
+  access), then `xdotool` (XWayland clients only).
+
+The backend in use is written to the debug log as
+`REMOTE: key injection backend: <name>`. If none is usable you get one
+`REMOTE: key injection: no external backend available ...` line and the
+extension falls back to XTEST.
+
+Master-side key forwarding works on both session types. System-level
+consume of forwarded keys (so they do not also reach the focused local
+app) is complete on X11, partial on Mutter/KWin, and unavailable on
+wlroots -- see [docs/architecture.md](docs/architecture.md).
 
 ## First connect
 

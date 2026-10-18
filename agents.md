@@ -27,6 +27,8 @@ transport.py                   asyncio TLS transport, reconnect, fingerprint pin
 protocol.py                    NVDA Remote newline-JSON framing and helpers
 keymap.py                      Windows VK <-> X11 keysym mapping
 braille_table.py               text -> braille cell mapping
+inject.py                      host key injection: portal, ydotool, xdotool
+                               (FIFO worker thread; never blocks GLib)
 settings_dialog.py             GTK 3 non-blocking settings dialog
 vendor/orca_ext_utils/         vendored KeysetGrab support for keyboard consume
 ```
@@ -175,6 +177,7 @@ The archive should include only:
 - `protocol.py`
 - `keymap.py`
 - `braille_table.py`
+- `inject.py`
 - `vendor/`
 - `LICENSE`
 
@@ -246,6 +249,7 @@ process still work, which is enough to verify a Gtk fallback path).
 - Transport code must not block the GLib thread.
 - Be defensive with Orca internals; hooks vary by Orca version.
 - Keep error handling non-fatal so Orca does not crash if a feature is unavailable.
+- Key injection runs on the `inject.py` worker thread. Never call the portal or the subprocess backends from the GLib thread; the consent prompt and fork/exec would freeze Orca.
 - Use `apply_patch` for manual edits.
 
 ## Install / Uninstall Scripts

@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.9.7 -- 2026-10-17
+
+Host-side key injection now supports Wayland as well as Xorg.
+
+### Added
+
+- `inject.py`: key injection backends beyond XTEST.
+  - Wayland: `ydotool` -> XDG RemoteDesktop portal (GNOME/KDE ask once
+    for keyboard control) -> `xdotool` for XWayland clients.
+  - Xorg: XTEST -> `xdotool` -> `ydotool` -> portal.
+  - Runs on a FIFO worker thread, because the portal consent prompt and
+    the subprocess calls must not block Orca's GLib main loop; the GLib
+    thread only resolves the key name and evdev code from the keysym.
+- The backend in use is logged once (`key injection backend: <name>`),
+  and the "no external backend available" case once, so a session can
+  be diagnosed from the debug log.
+
+### Changed
+
+- Host key injection no longer depends on `synthesize_key_event`.
+  Released Orca 51.1, which has no such hook, can now be controlled on
+  Xorg via `xdotool` (and on Wayland via the portal or `ydotool`).
+- `remote.py` routes every host-side press and release through
+  `_synth()`, which prefers the session-appropriate backend and falls
+  back to the controller when the external backends give up.
+
+### Notes
+
+- Master-side key forwarding already worked on both session types.
+  System-level consume of forwarded keys remains complete on X11,
+  partial on Mutter/KWin, and unavailable on wlroots.
+- README: build-compatibility table split into "being controlled" and
+  "controlling", plus a Wayland/Xorg section.
+
 ## 0.9.6 -- 2026-10-17
 
 Two live findings from driving every shortcut on Orca 51.alpha (perf

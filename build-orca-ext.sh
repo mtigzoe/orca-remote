@@ -59,6 +59,7 @@ required = [
     "protocol.py",
     "keymap.py",
     "braille_table.py",
+    "inject.py",
     "LICENSE",
 ]
 

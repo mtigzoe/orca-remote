@@ -61,6 +61,7 @@ from .transport import RemoteTransport
 # Both modules need the same normalization rule, so the helper lives
 # with the transport that compares the pin.
 from .transport import _normalize_fingerprint
+from .inject import KeyInjector, is_wayland_session, resolve_keysym
 
 # Vendored orca-ext-utils (see vendor/UPDATE.md for sync notes). The
 # import is guarded so an extension built without the vendor tree
@@ -270,6 +271,11 @@ class RemoteExtension(Extension):
         # synthetic releases so a force-killed VM is never the only
         # way out of a stuck modifier.
         self._pressed_keysyms: set[int] = set()
+        # Host-side injection backends beyond XTEST: the RemoteDesktop
+        # portal, ydotool, xdotool (see inject.py). It runs on its own
+        # worker thread because the portal consent prompt and subprocess
+        # calls must not block Orca's GLib main loop.
+        self._injector = KeyInjector(self._log)
         # Set True the first time we see channel_joined for the current
         # session intent; reset by explicit connect / disconnect /
         # disable so user-initiated transitions re-announce but silent
@@ -1658,6 +1664,48 @@ class RemoteExtension(Extension):
 
         GLib.idle_add(self._synthesize_key_idle_cb, keysym, pressed)
 
+    def _synth(self, keysym: int, pressed: bool) -> bool:
+        """Inject one key into the local machine on the best backend.
+
+        XTEST (controller.synthesize_key_event) covers Xorg and XWayland
+        clients without external tools, so it is the default. Two cases
+        need the external backends instead:
+
+        - Wayland: XTEST cannot reach native Wayland clients, so prefer
+          ydotool, then the RemoteDesktop portal, then xdotool.
+        - Orca builds without synthesize_key_event (released 51.1):
+          there is no XTEST path at all.
+
+        If the external backends give up (injector.exhausted) the
+        controller path is used again, and vice versa on failure.
+        """
+
+        injector = getattr(self, "_injector", None)
+        prefer_injector = (
+            injector is not None
+            and not injector.exhausted
+            and (
+                is_wayland_session()
+                or not hasattr(self.controller, "synthesize_key_event")
+            )
+        )
+        if prefer_injector:
+            name, evdev = resolve_keysym(keysym)
+            injector.send(keysym, pressed, name=name, evdev=evdev)
+            return True
+
+        ok = False
+        try:
+            ok = bool(self.controller.synthesize_key_event(keysym, pressed))
+        except AttributeError:
+            self._log("controller has no synthesize_key_event (older Orca?)")
+        except Exception as error:  # pylint: disable=broad-except
+            self._log(f"synthesize_key_event raised: {error}")
+        if not ok and injector is not None and not injector.exhausted:
+            name, evdev = resolve_keysym(keysym)
+            injector.send(keysym, pressed, name=name, evdev=evdev)
+        return ok
+
     def _synthesize_key_idle_cb(self, keysym: int, pressed: bool) -> bool:
         # Suppress duplicate PRESS events. NVDA Remote forwards OS-level
         # autorepeat as a stream of PRESS frames -- and a SINGLE physical
@@ -1697,13 +1745,7 @@ class RemoteExtension(Extension):
             self._pressed_keysyms.discard(keysym)
             return False
 
-        ok = False
-        try:
-            ok = bool(self.controller.synthesize_key_event(keysym, pressed))
-        except AttributeError:
-            self._log("controller has no synthesize_key_event (older Orca?)")
-        except Exception as error:  # pylint: disable=broad-except
-            self._log(f"synthesize_key_event raised: {error}")
+        ok = self._synth(keysym, pressed)
 
         if not pressed:
             # Forget it even if the release failed; otherwise every
@@ -1723,12 +1765,7 @@ class RemoteExtension(Extension):
         # PRESS frames down to one event; the eventual wire RELEASE
         # clears it (handled by the early-return above).
         if pressed and not sticky:
-            try:
-                self.controller.synthesize_key_event(keysym, False)
-            except Exception as error:  # pylint: disable=broad-except
-                self._log(
-                    f"synthesize_key_event (auto-release) raised: {error}"
-                )
+            self._synth(keysym, False)
 
         if pressed:
             self._pressed_keysyms.add(keysym)

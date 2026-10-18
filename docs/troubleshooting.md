@@ -142,20 +142,37 @@ openssl s_client -servername nvdaremote.com -connect nvdaremote.com:6837 \
 ## "I'm on Wayland and host mode doesn't inject keys"
 
 **Symptom.** Host mode connects fine; inbound keys are received;
-nothing happens on the slave's focused application.
+nothing happens in the focused application on a Wayland session.
 
-**Root cause.** `Atspi.generate_keyboard_event` requires XTEST.
-On a real Wayland session there's no XTEST — synth fails or is
-silently no-op.
+**Root cause.** `Atspi.generate_keyboard_event` goes through XTEST,
+which cannot reach native Wayland clients. XTEST also does not exist on
+builds without the `synthesize_key_event` controller hook.
 
-**Workaround.** Use X11 (or XWayland with a `XDG_SESSION_TYPE=x11`
-override). The Linux master direction has no such constraint
-because there's no synth involved on a master.
+**Fix (0.9.7).** Host key injection now picks a backend per session:
 
-There's no Wayland synth path on the roadmap; Wayland's security
-model deliberately excludes it. A future user-level
-workaround could use libei (XDG remote desktop portal) but that's
-a substantial rewrite.
+- Wayland: `ydotool` -> XDG RemoteDesktop portal -> `xdotool`
+  (XWayland clients only).
+- Xorg: XTEST -> `xdotool` -> `ydotool` -> portal.
+
+The chosen backend is logged once as
+`REMOTE: key injection backend: <name>`. If nothing works you see
+`REMOTE: key injection: no external backend available ...` and the
+extension falls back to XTEST.
+
+What to check when keys still do not arrive:
+
+- **GNOME/KDE Wayland**: approve the keyboard-control prompt when it
+  appears (with the portal backend it is asked once per session; it can
+  hide behind another window).
+- **ydotool**: it needs `ydotoold` running and a uinput udev rule. Test
+  it by hand: `ydotool key 30:1 30:0` should type an "a".
+- **Xorg, released Orca**: install `xdotool`; released 51.1 has no
+  `synthesize_key_event`, so the external backends are the only path.
+- **Wayland forbid the portal**: `ydotool` or `xdotool` are the
+  alternatives; there is no other compositor-sanctioned mechanism.
+
+The Linux master direction has no such constraint: forwarding keys on
+the master needs no injection.
 
 ## "I want to know how many speech items got dropped this session"
 

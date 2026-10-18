@@ -14,6 +14,7 @@ debugging, see [troubleshooting.md](troubleshooting.md).
 | `protocol.py` | NVDA Remote v2.x wire (newline-JSON), message constants, encode/decode helpers. |
 | `keymap.py` | Windows VK → X11 keysym table. Pure data + lookup. |
 | `braille_table.py` | US computer braille ASCII → cell byte table + Unicode braille block passthrough. |
+| `inject.py` | Host-side key injection backends: RemoteDesktop portal, ydotool, xdotool. Owns a FIFO worker thread. |
 | `settings_dialog.py` | Non-blocking Gtk dialog for relay host / port / channel / fingerprint / role. |
 | `__init__.py` | Package entry point. Also carries the literal metadata released Orca reads by parsing this file, so it must stay a real `Extension` subclass rather than a re-export. |
 | `vendor/orca_ext_utils/` | Vendored from <https://github.com/churst90/orca-ext-utils>; we only use `keyboard_grab.KeysetGrab`. See `vendor/UPDATE.md` for sync notes. |
@@ -201,6 +202,28 @@ and drops if over 256 KiB. Stops unbounded backlog when the relay
 or its TCP path is congested. Letting drain() block here would
 cascade backpressure into every producer (speech_emitted, inbound
 key reaction).
+
+### Key injection backends (host)
+
+XTEST (`controller.synthesize_key_event`) covers Xorg and XWayland
+clients without external tools, so it is the default on Xorg and where
+the controller hook exists. Native Wayland clients are unreachable that
+way, so on a Wayland session the order is ydotool → RemoteDesktop
+portal → xdotool, with XTEST as the fallback when every external
+backend fails (`KeyInjector.exhausted`). Builds without the controller
+hook (released 51.1) use the external backends on Xorg too.
+
+Portal setup blocks on the user's consent prompt and the subprocess
+backends block on fork/exec, so `KeyInjector` runs everything on a FIFO
+worker thread. The GLib thread only resolves `(key name, evdev code)`
+from the keysym (`resolve_keysym`, which touches GDK) and queues the
+event; the queue preserves press/release order. The backend that worked
+is remembered and tried first, but every key can fall through to the
+next one.
+
+The chosen backend is logged once (`key injection backend: <name>`),
+and the "no external backend available" case is logged once before
+falling back, so a user can tell which path their session took.
 
 ### Two speech-reporting APIs, picked at load time
 
