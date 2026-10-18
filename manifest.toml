@@ -1,7 +1,7 @@
 [extension]
 name = "remote"
 display-name = "Orca Remote"
-version = "0.9.4"
+version = "0.9.5"
 author = "SerrebiDev and contributors"
 license = "LGPL-2.1-or-later"
 url = "https://github.com/serrebidev/orca-remote"
@@ -15,8 +15,14 @@ machine. Orca Remote command chords stay local while forwarding.
 """
 
 [compatibility]
-min-orca = "51.alpha"
-last-tested-orca = "51.alpha"
+# Released Orca (51.1) loads this package and mirrors speech; its
+# controller has no subscribe_* hooks, so key forwarding, braille
+# mirroring, and inbound braille rendering need a build that has
+# them (the perf branch this project is tested on, or a later
+# upstream). Install on released Orca with ./install-extension;
+# the manifest/--install-extension path is newer-Orca only.
+min-orca = "51.1"
+last-tested-orca = "51.alpha (perf branch)"
 
 [entry]
 module = "remote"

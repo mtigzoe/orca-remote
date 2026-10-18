@@ -74,6 +74,16 @@ except Exception:  # pylint: disable=broad-except
 _SETTINGS_FILENAME = "orca-remote-settings.json"
 
 
+# Orca builds report outbound speech two different ways. The perf
+# branch (and the builds this project is live-tested on) has the
+# controller hook `subscribe_speech_emitted`. Released Orca 51.1 has
+# no such controller method; its Extension API calls
+# `on_speech_output` instead. We use whichever the running Orca
+# provides -- never both, or the peer would hear every utterance
+# twice.
+_HAVE_ON_SPEECH_OUTPUT = hasattr(Extension, "on_speech_output")
+
+
 # Modifier keysyms whose press/release we use to recognize when an
 # inbound key sequence is about to complete one of our own command
 # chords. Tracked against `_pressed_keysyms`, which records what we've
@@ -262,6 +272,11 @@ class RemoteExtension(Extension):
         # Counters surfaced via _log to give the user a way to see if
         # we're silently dropping things. Reset on disable.
         self._dropped_nonstring_items: int = 0
+        # Master-side: reasons an inbound `speak` frame was dropped,
+        # already logged this session. A peer that sends nothing and a
+        # gate that drops everything both sound like silence; one log
+        # line per reason tells the two apart in orca-debug.txt.
+        self._speak_ignored_reasons: set[str] = set()
         # User toggles surfaced via the remote menu. Defaults match
         # "everything on" so first-time users get the full experience;
         # menu items flip these without restarting the transport.
@@ -313,13 +328,22 @@ class RemoteExtension(Extension):
             self._restart_transport()
         else:
             self._log("auto-connect disabled; waiting for explicit connect")
-        # Subscribe to outbound Orca speech so host mode can mirror
-        # local utterances onto the relay. No-op on older Orca builds
-        # that predate the speech_emitted signal.
-        try:
-            self.controller.subscribe_speech_emitted(self._on_speech_emitted)
-        except AttributeError:
-            self._log("controller has no subscribe_speech_emitted (older Orca?)")
+        # Mirror outbound speech in host mode. Which mechanism exists
+        # depends on the Orca build: perf-branch builds expose the
+        # subscribe_speech_emitted controller hook, released 51.1+ call
+        # Extension.on_speech_output (implemented below). Never both,
+        # or the master hears every utterance twice.
+        if _HAVE_ON_SPEECH_OUTPUT:
+            self._log("host speech mirroring via Extension.on_speech_output")
+        else:
+            try:
+                self.controller.subscribe_speech_emitted(self._on_speech_emitted)
+            except AttributeError:
+                self._log(
+                    "this Orca has neither on_speech_output nor "
+                    "subscribe_speech_emitted; host mode will not "
+                    "mirror speech"
+                )
         self._hook_character_speech()
         # Same for braille. Hook landed in perf branch after speech;
         # AttributeError just means we're on a pre-braille-hook Orca,
@@ -422,6 +446,18 @@ class RemoteExtension(Extension):
         # ACSS / index marks can come later.
         message = {"type": protocol.MSG_SPEAK, "sequence": [text]}
         self._schedule_send(message, what="speech")
+
+    def on_speech_output(self, output: Any) -> None:
+        """Mirror an utterance on Orca builds with the extension output hook.
+
+        Released Orca (51.1+) calls this on every enabled Extension
+        before speech reaches the provider; it stands in for the
+        perf-branch `subscribe_speech_emitted` path. Returning None
+        leaves local speech untouched -- we only observe.
+        """
+
+        self._on_speech_emitted(str(getattr(output, "text", "") or ""), "", "")
+        return None
 
     def _hook_character_speech(self) -> None:
         """Mirror single characters, which bypass speech_emitted.
@@ -711,8 +747,19 @@ class RemoteExtension(Extension):
     # reach Orca's dispatcher even while master-mode forwarding is on.
 
     def _get_commands(self) -> list[Command]:
-        ctrl = keybindings.ORCA_CTRL_MODIFIER_MASK
-        alt = keybindings.ORCA_ALT_MODIFIER_MASK
+        # Not every Orca build exports the combined Orca+Ctrl / Orca+Alt
+        # masks; fall back to composing them like the ctrl_shift case
+        # below, so command registration never raises during startup.
+        ctrl = getattr(
+            keybindings,
+            "ORCA_CTRL_MODIFIER_MASK",
+            keybindings.ORCA_MODIFIER_MASK | keybindings.CTRL_MODIFIER_MASK,
+        )
+        alt = getattr(
+            keybindings,
+            "ORCA_ALT_MODIFIER_MASK",
+            keybindings.ORCA_MODIFIER_MASK | keybindings.ALT_MODIFIER_MASK,
+        )
         ctrl_shift = getattr(
             keybindings,
             "ORCA_CTRL_SHIFT_MODIFIER_MASK",
@@ -1208,6 +1255,8 @@ class RemoteExtension(Extension):
     def _stop_transport(self) -> None:
         # Queued before the teardown below, so the releases go out first.
         self._leave_remote_focus()
+        # A new session should report its own dropped-speech reasons.
+        self._speak_ignored_reasons.clear()
         if self._loop is None or self._transport is None:
             # No live transport, but we may still have a stale held-key
             # set from a previous session. Drain it anyway.
@@ -1240,16 +1289,15 @@ class RemoteExtension(Extension):
             # independent of focus so a muted state persists across
             # switch_side toggles -- coming back to remote stays quiet
             # until the user explicitly unmutes.
-            if (
-                self._current_role() == ROLE_CLIENT
-                and self._focus_on_remote
-                and not self._inbound_speech_muted
-            ):
-                text, dropped = protocol.extract_speech_text(message)
-                if dropped:
-                    self._dropped_nonstring_items += dropped
-                if text:
-                    self._say_async(text)
+            reason = self._inbound_speech_drop_reason()
+            if reason:
+                self._log_speak_ignored(reason)
+                return
+            text, dropped = protocol.extract_speech_text(message)
+            if dropped:
+                self._dropped_nonstring_items += dropped
+            if text:
+                self._say_async(text)
         elif msg_type in (protocol.MSG_CANCEL, protocol.MSG_PAUSE_SPEECH):
             # The peer is asking us to flush queued speech (cancel) or
             # pause (pause_speech). Screen-reader use cases treat both
@@ -1337,6 +1385,30 @@ class RemoteExtension(Extension):
                         GLib.idle_add(self._render_inbound_braille_idle_cb, text)
         else:
             self._log(f"unhandled message type: {msg_type}")
+
+    def _inbound_speech_drop_reason(self) -> str:
+        """Why an inbound `speak` frame would be dropped; "" means speak it."""
+
+        if self._current_role() != ROLE_CLIENT:
+            return "we are the host"
+        if not self._focus_on_remote:
+            return "focused on the local machine"
+        if self._inbound_speech_muted:
+            return "inbound muted"
+        return ""
+
+    def _log_speak_ignored(self, reason: str) -> None:
+        """Log the first inbound `speak` dropped for each reason this session.
+
+        A peer that never sends speech and a gate that drops all of it
+        sound identical to the user; one line per reason in the debug
+        log tells them apart without speaking anything.
+        """
+
+        if reason in self._speak_ignored_reasons:
+            return
+        self._speak_ignored_reasons.add(reason)
+        self._log(f"inbound speech dropped ({reason})")
 
     def toggle_speech_mirror(self) -> bool:
         """Flip the host-mode speech mirror on/off. Spoken feedback."""
@@ -1572,14 +1644,26 @@ class RemoteExtension(Extension):
         return False  # one-shot
 
     def _interrupt_speech_idle_cb(self) -> bool:
-        """Cancel any in-progress Orca speech on the GLib main thread."""
+        """Cancel any in-progress Orca speech on the GLib main thread.
 
-        try:
-            self.controller.execute_command_internal(
-                "SpeechManager", "InterruptSpeech", notify_user=False,
-            )
-        except Exception as error:  # pylint: disable=broad-except
-            self._log(f"InterruptSpeech failed: {error}")
+        The SpeechManager command name differs by Orca build: the perf
+        branch registers InterruptSpeech, released 51.1 registers
+        interrupt_speech. Try both, and log the failure once instead of
+        on every inbound cancel or key press.
+        """
+
+        last_error: Exception | None = None
+        for name in ("InterruptSpeech", "interrupt_speech"):
+            try:
+                self.controller.execute_command_internal(
+                    "SpeechManager", name, notify_user=False,
+                )
+                return False  # one-shot
+            except Exception as error:  # pylint: disable=broad-except
+                last_error = error
+        if not getattr(self, "_warned_no_interrupt", False):
+            self._warned_no_interrupt = True
+            self._log(f"speech interrupt unavailable on this Orca: {last_error}")
         return False  # one-shot
 
     def _chord_matches_own_command(self, keysym: int) -> bool:

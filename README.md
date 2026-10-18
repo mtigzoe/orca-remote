@@ -33,7 +33,8 @@ File transfer is not implemented — use clipboard sync for text, or a separate 
 
 Some features depend on newer Orca controller hooks:
 
-- `subscribe_speech_emitted` for host speech mirroring.
+- `subscribe_speech_emitted` for host speech mirroring on perf-branch
+  builds (released Orca uses the `on_speech_output` hook instead).
 - `subscribe_braille_emitted` and `display_braille_text` for braille mirroring.
 - `subscribe_keyboard_event` and `synthesize_key_event` for modern key forwarding and injection.
 
@@ -41,15 +42,53 @@ The extension degrades gracefully when a hook is missing, but the related featur
 
 ## Install
 
-Build and install the extension:
+Build the extension archive and install it:
 
 ```bash
-./build-orca-ext.sh .
-orca --install-extension remote.orca-ext
+./install-extension
+orca --replace
+```
+
+`install-extension` builds `remote.orca-ext` when needed, unpacks it into
+`$XDG_DATA_HOME/orca/extensions/remote/`, and approves it with
+`orca --approve-extension remote`.
+
+Two things worth knowing about that path:
+
+- **Released Orca has no `--install-extension` flag.** Orca 51.1 ships
+  `--approve-extension` and an Approve button in the Preferences
+  extension list, but nothing that unpacks an archive for you, so this
+  repository does the unpacking. (Newer Orca builds used for
+  development do have a manifest-based installer; it produces the same
+  directory.)
+- An unapproved extension is listed in Preferences but never loads.
+  `install-extension` approves it; in the GUI, use Orca Preferences,
+  Extensions, and press Approve on the Orca Remote row.
+
+By hand, the same thing:
+
+```bash
+mkdir -p ~/.local/share/orca/extensions/remote
+python3 -m zipfile -e remote.orca-ext ~/.local/share/orca/extensions/remote
+orca --approve-extension remote
 orca --replace
 ```
 
 Open settings with **Orca + Ctrl + R**, enter the relay host, port, channel key, certificate fingerprint, and role, then save.
+
+## Which Orca builds do what
+
+| Orca build | Speech mirroring | Remote key control | Braille mirroring |
+|---|---|---|---|
+| Released 51.1 | yes, both directions | no | no |
+| Perf branch or newer main | yes | yes | yes |
+
+Released Orca's controller has no `subscribe_speech_emitted`,
+`subscribe_braille_emitted`, `subscribe_keyboard_event`,
+`synthesize_key_event` or `display_braille_text`. The extension still
+loads there and mirrors speech through `Extension.on_speech_output`;
+the missing features are logged and disabled rather than crashing.
+Key forwarding needs a build with those controller hooks.
 
 ## First connect
 

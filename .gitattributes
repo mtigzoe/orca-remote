@@ -4,3 +4,4 @@
 *.md text eol=lf
 install text eol=lf
 uninstall text eol=lf
+install-extension text eol=lf

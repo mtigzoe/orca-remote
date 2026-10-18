@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.9.5 -- 2026-10-17
+
+Installing and speech on released Orca (51.1), plus quieter diagnostics
+for a peer that says nothing.
+
+### Fixed
+
+- The package no longer shows up as "Invalid" in Orca's extension list
+  on released Orca, and it actually loads there. `__init__.py` now
+  declares a real `OrcaRemoteExtension(Extension)` class with literal
+  GROUP_LABEL / DESCRIPTION / VERSION / AUTHOR / WEBSITE metadata.
+  Released Orca reads package metadata by parsing that file; finding no
+  Extension subclass (the file was an empty marker), it labelled the
+  package invalid and skipped it.
+- Host-mode speech mirroring now works on released Orca. 51.1 has no
+  `subscribe_speech_emitted`; the extension uses that controller hook
+  on perf-branch builds and `Extension.on_speech_output` on 51.1 —
+  whichever exists, never both, so the master never hears an utterance
+  twice.
+- Speech interruption uses the SpeechManager command name the running
+  Orca actually has (InterruptSpeech on the perf branch,
+  interrupt_speech on 51.1), and logs a single line when neither
+  resolves instead of one line per key press.
+- Command registration no longer assumes `ORCA_CTRL_MODIFIER_MASK` and
+  `ORCA_ALT_MODIFIER_MASK` exist on every Orca build; both fall back to
+  composed masks like the ctrl+shift binding already did.
+
+### Added
+
+- `install-extension`: builds the archive if needed, unpacks it into
+  `$XDG_DATA_HOME/orca/extensions/remote/`, and approves it with
+  `orca --approve-extension remote`. Released Orca has no
+  `--install-extension` flag, so the README's previous install line
+  could never have worked on 51.1.
+- Inbound `speak` frames dropped by the focus/mute gate are logged once
+  per reason per session — "inbound speech dropped (focused on the
+  local machine / inbound muted / we are the host)". Silence from a
+  peer that never spoke and silence from our own gate now look
+  different in orca-debug.txt.
+- README: a build-compatibility table (released 51.1 vs a perf-branch
+  build) and the manual unpack + approve procedure.
+
 ## 0.9.4 -- 2026-10-15
 
 Found by a live test on orca-perf 51.alpha against the stock relay.

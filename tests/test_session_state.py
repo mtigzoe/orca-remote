@@ -21,6 +21,7 @@ def _master(mod):
     instance._master_grab = None
     instance._inbound_speech_muted = False
     instance._pressed_keysyms = set()
+    instance._speak_ignored_reasons = set()
     instance._schedule_send = mock.Mock()
     instance._say = mock.Mock()
     instance._log = mock.Mock()

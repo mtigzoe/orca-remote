@@ -14,6 +14,8 @@ Modern extension path:
 
 ```text
 manifest.toml                  Orca extension metadata
+__init__.py                    Package entry point; carries the literal
+                               metadata released Orca reads by parsing it
 remote.py                      RemoteExtension entry point and state machines
   - registers Orca commands
   - owns settings lifecycle
@@ -53,6 +55,29 @@ The extension starts an asyncio event loop in a daemon thread. Orca, GTK, AT-SPI
 
 - GLib to asyncio: `asyncio.run_coroutine_threadsafe(...)`, normally through `_schedule_send`.
 - asyncio to GLib: `GLib.idle_add(...)`, returning `False` for one-shot callbacks.
+
+### Orca Build Compatibility
+
+Two Orca APIs report outbound speech, and a build has only one of them:
+
+- Perf-branch builds: `controller.subscribe_speech_emitted`.
+- Released 51.1: `Extension.on_speech_output`.
+
+`_HAVE_ON_SPEECH_OUTPUT` (module level in `remote.py`) selects which is
+used; both funnel into `_on_speech_emitted`, exactly once per utterance.
+
+Released 51.1 also has no `subscribe_braille_emitted`,
+`subscribe_keyboard_event`, `synthesize_key_event`,
+`display_braille_text`, or `get_clipboard_text`. Those features are
+unavailable there and their absence is logged; do not make something
+depend on them without a fallback.
+
+Released Orca has no `--install-extension` flag either. Installing means
+unpacking the archive into `$XDG_DATA_HOME/orca/extensions/remote/` and
+approving it (`orca --approve-extension remote`); `install-extension`
+does both. `__init__.py` must keep a ClassDef whose base is named
+`Extension` with literal metadata: released Orca reads package metadata
+by parsing that file and marks packages without it "Invalid".
 
 ### Settings
 
@@ -175,6 +200,9 @@ There is no full Orca integration test suite in this repo. Prefer pure-function 
 ## Install / Uninstall Scripts
 
 - `build-orca-ext.sh` builds the modern extension archive.
+- `install-extension` unpacks the archive into the user extensions
+  directory and approves it (the path that works on released Orca,
+  which has no `--install-extension` flag).
 - `install` installs the legacy `orca-customizations.py` path.
 - `uninstall` removes the legacy install and restores a legacy backup if present.
 

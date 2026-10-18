@@ -15,7 +15,7 @@ debugging, see [troubleshooting.md](troubleshooting.md).
 | `keymap.py` | Windows VK → X11 keysym table. Pure data + lookup. |
 | `braille_table.py` | US computer braille ASCII → cell byte table + Unicode braille block passthrough. |
 | `settings_dialog.py` | Non-blocking Gtk dialog for relay host / port / channel / fingerprint / role. |
-| `__init__.py` | Thin re-export so Orca's loader can find `RemoteExtension`. |
+| `__init__.py` | Package entry point. Also carries the literal metadata released Orca reads by parsing this file, so it must stay a real `Extension` subclass rather than a re-export. |
 | `vendor/orca_ext_utils/` | Vendored from <https://github.com/churst90/orca-ext-utils>; we only use `keyboard_grab.KeysetGrab`. See `vendor/UPDATE.md` for sync notes. |
 
 ## Threads
@@ -201,6 +201,27 @@ and drops if over 256 KiB. Stops unbounded backlog when the relay
 or its TCP path is congested. Letting drain() block here would
 cascade backpressure into every producer (speech_emitted, inbound
 key reaction).
+
+### Two speech-reporting APIs, picked at load time
+
+Orca builds differ in how an extension sees outbound speech:
+
+- Perf-branch builds: `controller.subscribe_speech_emitted(callback)`
+  delivering `(text, voice_type, language)`.
+- Released 51.1: `Extension.on_speech_output(SpeechOutput)`, where the
+  dataclass carries `text`.
+
+`_HAVE_ON_SPEECH_OUTPUT` is computed from the base class at import
+time, and `set_up_commands` subscribes to the controller hook only
+when the base class has no output hook — so the peer hears each
+utterance once, not twice. `on_speech_output` returns `None`, meaning
+"do not replace or consume the speech", and hands the text to
+`_on_speech_emitted`.
+
+Inbound `speak` frames dropped by the focus/mute gate are logged once
+per reason per session (`_log_speak_ignored`): "the peer sends nothing"
+and "we dropped everything" are otherwise indistinguishable from the
+user's chair.
 
 ### US computer braille for outbound mirroring
 

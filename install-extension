@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# Install the Orca Remote extension for the Orca on this machine.
+#
+# Released Orca has no "--install-extension" flag. What an extension
+# needs is to exist as a directory under
+# $XDG_DATA_HOME/orca/extensions/ and to be approved once. This script
+# unpacks the built archive there (replacing a previous Orca Remote
+# install in place) and approves it when the orca binary can.
+#
+# Usage:
+#   ./install-extension [path/to/remote.orca-ext]
+#
+# With no argument, the archive is built from this checkout (so a stale
+# remote.orca-ext can never be installed by accident); with a path, that
+# archive is used as-is, e.g. a downloaded release artifact.
+
+set -euo pipefail
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+EXTENSIONS_DIR="$DATA_HOME/orca/extensions"
+
+if [ "$#" -ge 1 ]; then
+    # Explicit archive (e.g. a downloaded release artifact): use as-is.
+    ARCHIVE="$1"
+else
+    # No argument: always build from this checkout, so a stale
+    # remote.orca-ext can never be installed by accident.
+    ARCHIVE="$DIR/remote.orca-ext"
+    echo "Building $ARCHIVE"
+    "$DIR/build-orca-ext.sh" "$DIR" "$ARCHIVE"
+fi
+
+if [ ! -f "$ARCHIVE" ]; then
+    echo "error: $ARCHIVE not found" >&2
+    exit 1
+fi
+
+DEST="$(
+    python3 - "$ARCHIVE" "$EXTENSIONS_DIR" <<'PY'
+"""Unpack an .orca-ext archive into the user's extensions directory."""
+
+import os
+import shutil
+import sys
+import tempfile
+import tomllib
+import zipfile
+from pathlib import Path
+
+archive = Path(sys.argv[1]).resolve()
+extensions_dir = Path(sys.argv[2])
+
+if not zipfile.is_zipfile(archive):
+    sys.exit(f"error: not a zip archive: {archive}")
+
+with tempfile.TemporaryDirectory(prefix="orca-remote-install-") as tmp:
+    tmp_dir = Path(tmp)
+    with zipfile.ZipFile(archive) as zf:
+        # Same path-traversal guard Orca's own package loader uses.
+        for member in zf.namelist():
+            normalized = os.path.normpath(member)
+            if normalized.startswith(("/", "..")) or os.path.isabs(normalized):
+                sys.exit(f"error: unsafe archive member: {member}")
+        zf.extractall(tmp_dir)
+
+    manifest = tmp_dir / "manifest.toml"
+    if not manifest.is_file():
+        sys.exit("error: archive has no manifest.toml at the top level")
+    name = str(tomllib.loads(manifest.read_text(encoding="utf-8"))["extension"]["name"])
+
+    dest = extensions_dir / name
+    if dest.exists():
+        if not (dest / "manifest.toml").is_file():
+            sys.exit(
+                f"error: {dest} exists and does not look like an Orca "
+                "Remote install; move it away first"
+            )
+        shutil.rmtree(dest)
+
+    extensions_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(tmp_dir, dest)
+    print(dest)
+PY
+)"
+
+echo "Unpacked Orca Remote into $DEST"
+
+# Approval is per content hash and keyed on the directory name. Orca
+# 51.1 has --approve-extension; without it, the Preferences list has an
+# Approve button for the row.
+if command -v orca >/dev/null 2>&1 && orca --help 2>/dev/null | grep -q -- "--approve-extension"; then
+    orca --approve-extension "$(basename "$DEST")"
+else
+    echo "This orca binary has no --approve-extension flag. Approve the"
+    echo "extension once instead: Orca Preferences, Extensions, then the"
+    echo "Approve button on the Orca Remote row."
+fi
+
+echo "Restart Orca to load it: orca --replace"

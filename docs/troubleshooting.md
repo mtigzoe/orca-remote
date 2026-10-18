@@ -188,3 +188,68 @@ episode are logged.
 drop is the right behavior. If it's persistent, check relay
 reachability (`ping`, `mtr`) and consider self-hosting closer to
 both peers.
+
+## "The extension shows up in Preferences but says invalid"
+
+**Symptom.** After unpacking `remote.orca-ext` into
+`~/.local/share/orca/extensions/remote/`, the User Extensions list
+shows the package, but the row reads "Invalid" and nothing loads.
+
+**Root cause.** Released Orca reads package metadata by parsing
+`__init__.py` and looking for a class whose base is named `Extension`.
+Our `__init__.py` used to be an empty marker file, so the reader found
+no class and listed the package as invalid; the loader had no
+Extension subclass to instantiate either.
+
+**Fix (0.9.5).** `__init__.py` now defines
+`OrcaRemoteExtension(Extension)` with literal GROUP_LABEL /
+DESCRIPTION / VERSION / AUTHOR / WEBSITE assignments, deriving from the
+real `RemoteExtension`. Reinstall with `./install-extension` after
+upgrading; `tests/test_package.py` pins the shape so it cannot regress.
+
+## "orca --install-extension does nothing"
+
+**Symptom.** The documented install line runs, Orca starts normally,
+and no extension appears.
+
+**Root cause.** Released Orca has no `--install-extension` flag. It has
+`--approve-extension`, and the Preferences extension list with an
+Approve button, but nothing that unpacks an `.orca-ext` archive.
+
+**Fix.** Use `./install-extension`, which unpacks the archive into
+`~/.local/share/orca/extensions/remote/` and then runs
+`orca --approve-extension remote`. Unpacking alone is not enough:
+unapproved extensions are listed but never loaded. An existing install
+is replaced in place; the extension must be re-approved after any
+content change, because approval is keyed on the package hash.
+
+## "A remote master hears nothing from an Orca host"
+
+**Symptom.** In host mode (this machine is being controlled), the
+remote NVDA/Orca hears nothing, or hears keys working but not speech.
+
+**Check the log first.** Orca builds report outbound speech two ways:
+the perf branch has `controller.subscribe_speech_emitted`, released
+51.1 has only `Extension.on_speech_output`. RemoteExtension uses
+whichever exists and logs it at startup:
+
+```
+REMOTE: host speech mirroring via Extension.on_speech_output
+```
+
+Neither found, and the log says so, means host speech cannot be
+mirrored on that build at all.
+
+**For inbound silence** (we hear nothing from the peer), the log now
+prints the first dropped `speak` frame per reason:
+
+```
+REMOTE: inbound speech dropped (focused on the local machine)
+REMOTE: inbound speech dropped (inbound muted)
+REMOTE: inbound speech dropped (we are the host)
+```
+
+No such line and no speech means the peer never sent a `speak` frame —
+its screen reader is not in slave mode, or it never saw our
+`client_joined`. Use Orca+Alt+Tab on the client to leave "focused on
+the local machine" before concluding the link is broken.
