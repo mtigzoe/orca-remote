@@ -297,3 +297,17 @@ process still work, which is enough to verify a Gtk fallback path).
 - Orca keybindings reference: https://help.gnome.org/users/orca/stable/commands.html.en
 - NVDA Remote default relay port: `6837`
 - NVDA Remote protocol version: `2`
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in this repo's GitHub Issues, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
