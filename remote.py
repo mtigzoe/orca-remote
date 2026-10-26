@@ -136,6 +136,11 @@ def _gtk_clipboard() -> Any:
 # twice.
 _HAVE_ON_SPEECH_OUTPUT = hasattr(Extension, "on_speech_output")
 
+# Same split for braille output: perf builds report refreshes through
+# the controller hook `subscribe_braille_emitted`; released Orca 51.1
+# has no such method and calls `Extension.on_braille_output` instead.
+_HAVE_ON_BRAILLE_OUTPUT = hasattr(Extension, "on_braille_output")
+
 
 # Modifier keysyms whose press/release we use to recognize when an
 # inbound key sequence is about to complete one of our own command
@@ -423,6 +428,7 @@ class RemoteExtension(Extension):
         # (SpeechServer class, original speak_character, original
         # speak_key_event) while _hook_character_speech is active.
         self._char_speech_patch: "tuple[Any, Any, Any] | None" = None
+        self._keyboard_patch: "tuple[Any, Any] | None" = None
         # Master-mode grab state, active while focused-on-remote.
         # Prefer Orca's own AT-SPI device because those grabs consume
         # reliably on X11; fallback to vendored KeysetGrab.
@@ -477,22 +483,36 @@ class RemoteExtension(Extension):
                     "mirror speech"
                 )
         self._hook_character_speech()
-        # Same for braille. Hook landed in perf branch after speech;
-        # AttributeError just means we're on a pre-braille-hook Orca,
-        # in which case braille mirroring is silently unavailable.
-        try:
-            self.controller.subscribe_braille_emitted(self._on_braille_emitted)
-        except AttributeError:
-            self._log("controller has no subscribe_braille_emitted (older Orca?)")
-        # And keyboard events for master-side key forwarding. Hook
-        # landed even later; pre-hook Orca silently has no forwarding.
+        # Same split for braille: perf builds expose the controller
+        # hook, released 51.1 calls Extension.on_braille_output
+        # (implemented below). Never both, or the master would see
+        # every refresh twice.
+        if _HAVE_ON_BRAILLE_OUTPUT:
+            self._log("host braille mirroring via Extension.on_braille_output")
+        else:
+            try:
+                self.controller.subscribe_braille_emitted(self._on_braille_emitted)
+            except AttributeError:
+                self._log(
+                    "this Orca has neither on_braille_output nor "
+                    "subscribe_braille_emitted; host mode will not "
+                    "mirror braille"
+                )
+        # And keyboard events for master-side key forwarding. The
+        # controller hook exists only on perf builds; released Orca
+        # (51.1) gives extensions no keyboard hook at all, so fall
+        # back to patching KeyboardEvent.process -- the interception
+        # point the legacy implementation uses -- and feed events to
+        # _on_keyboard_event ourselves.
         try:
             self.controller.subscribe_keyboard_event(self._on_keyboard_event)
         except AttributeError:
-            self._log(
-                "controller has no subscribe_keyboard_event "
-                "(older Orca?); master-side keys unavailable"
-            )
+            if not self._hook_keyboard_process():
+                self._log(
+                    "controller has no subscribe_keyboard_event and "
+                    "KeyboardEvent.process could not be patched; "
+                    "master-side keys unavailable"
+                )
 
     def disable(self) -> None:
         """Stop the transport, then deregister commands."""
@@ -523,6 +543,7 @@ class RemoteExtension(Extension):
             self.controller.unsubscribe_keyboard_event(self._on_keyboard_event)
         except AttributeError:
             pass
+        self._unhook_keyboard_process()
         # Release the master-mode KeysetGrab if one is held. Safe to
         # call when nothing's held (no-op).
         self._disable_master_grab()
@@ -590,6 +611,86 @@ class RemoteExtension(Extension):
 
         self._on_speech_emitted(str(getattr(output, "text", "") or ""), "", "")
         return None
+
+    def on_braille_output(self, output: Any) -> None:
+        """Mirror a braille refresh on Orca builds with the output hook.
+
+        Released Orca (51.1+) calls this on every enabled Extension
+        before braille reaches the display; it stands in for the
+        perf-branch `subscribe_braille_emitted` path. The output's
+        regions carry the line's text in order; the cursor cell is
+        the focused region's offset within the joined line. Returning
+        None leaves local braille untouched -- we only observe.
+        """
+
+        regions = list(getattr(output, "regions", ()) or ())
+        focused = getattr(output, "focused_region", None)
+        text = ""
+        cursor = -1
+        for region in regions:
+            if region is focused:
+                cursor = len(text) + int(getattr(region, "cursor_offset", 0) or 0)
+            text += str(getattr(region, "string", "") or "")
+        self._on_braille_emitted(text, cursor)
+        return None
+
+    def _hook_keyboard_process(self) -> bool:
+        """Feed master-side key forwarding on Orca builds without the hook.
+
+        Released Orca (51.1) gives extensions no keyboard-event
+        subscription: `subscribe_keyboard_event` exists only on perf
+        builds, so without this fallback a released-Orca master could
+        connect and hear the host but never send it a single key.
+        Patch `KeyboardEvent.process` -- the interception point the
+        legacy implementation uses -- and route each event through
+        `_on_keyboard_event`, whose return value keeps its perf-hook
+        meaning: True consumes the event (the original process()
+        never runs, so Orca does not dispatch it locally), False lets
+        the original run. Returns False when the patch cannot be
+        installed.
+        """
+
+        if getattr(self, "_keyboard_patch", None) is not None:
+            return True
+        try:
+            from orca import input_event  # pylint: disable=import-outside-toplevel
+
+            cls = input_event.KeyboardEvent
+            orig_process = cls.process
+        except Exception as error:  # pylint: disable=broad-except
+            self._log(f"keyboard forwarding patch unavailable: {error}")
+            return False
+        ext = self
+
+        def process(event_self: Any) -> Any:
+            try:
+                consumed = ext._on_keyboard_event(
+                    bool(event_self.is_pressed_key()),
+                    int(getattr(event_self, "hw_code", 0) or 0),
+                    int(getattr(event_self, "id", 0) or 0),
+                    int(getattr(event_self, "modifiers", 0) or 0),
+                    str(getattr(event_self, "_text", "") or ""),
+                )
+            except Exception:  # pylint: disable=broad-except
+                consumed = False
+            if consumed:
+                return True
+            return orig_process(event_self)
+
+        cls.process = process  # type: ignore[method-assign]
+        self._keyboard_patch = (cls, orig_process)
+        self._log(
+            "master-side keys via KeyboardEvent.process patch "
+            "(this Orca has no subscribe_keyboard_event)"
+        )
+        return True
+
+    def _unhook_keyboard_process(self) -> None:
+        if getattr(self, "_keyboard_patch", None) is None:
+            return
+        cls, orig_process = self._keyboard_patch
+        cls.process = orig_process
+        self._keyboard_patch = None
 
     def _hook_character_speech(self) -> None:
         """Mirror single characters, which bypass speech_emitted.
@@ -1712,7 +1813,17 @@ class RemoteExtension(Extension):
         try:
             self.controller.display_braille_text(text)
         except AttributeError:
-            # Older Orca without the hook. Surface once so the user
+            # Released Orca (51.1) has no display_braille_text, but
+            # its display_message_internal is a braille-only message
+            # display -- exactly the render an inbound frame needs.
+            fallback = getattr(self.controller, "display_message_internal", None)
+            if callable(fallback):
+                try:
+                    fallback(text, False)
+                except Exception as error:  # pylint: disable=broad-except
+                    self._log(f"display_message_internal failed: {error}")
+                return False
+            # Older Orca without either call. Surface once so the user
             # knows; subsequent failures just no-op via the flag.
             if not getattr(self, "_warned_no_braille_render", False):
                 self._log(

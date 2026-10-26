@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.9.11 -- 2026-10-25
+
+### Fixed
+
+- Released Orca 51.1 (e.g. Fedora) now works in both roles. The
+  extension was built against perf-branch controller hooks that
+  released Orca does not ship, which left a stock 51.1 install able
+  to connect and hear speech but unable to send keys or mirror
+  braille -- most visible as Linux-to-Linux sessions appearing
+  completely broken while NVDA-covered pairs still worked. Three
+  fallbacks close the gap: master key forwarding patches
+  `KeyboardEvent.process` (the legacy implementation's interception
+  point) when `subscribe_keyboard_event` is absent; host braille
+  mirroring uses the `Extension.on_braille_output` adapter when
+  `subscribe_braille_emitted` is absent; inbound braille rendering
+  falls back to `display_message_internal` when
+  `display_braille_text` is absent. A released-51.1 test module pins
+  all three fallbacks.
+- The legacy customizations install now speaks on released Orca
+  51.1: its local-speech paths used the removed `orca.speech`
+  module, so announcements and inbound speech silently printed
+  instead of speaking. They fall back to the remote controller's
+  speak/interrupt internals.
+
 ## 0.9.10 -- 2026-10-17
 
 ### Added

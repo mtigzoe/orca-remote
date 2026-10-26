@@ -152,12 +152,35 @@ def _speak_message(text):
         print("Orca Remote: %s" % text)
 
 
+def _remote_controller():
+    """Orca's remote controller, or None on builds without one.
+
+    Released Orca (51.1) removed the orca.speech module this file's
+    local-speech paths were written against; the controller's
+    speak/execute internals are the released-build equivalent.
+    """
+    try:
+        from orca import dbus_service
+        return dbus_service.get_remote_controller()
+    except Exception:
+        return None
+
+
 def _speak_message_idle_cb(text):
     try:
         import orca.speech as speech
         speech.speak(text)
+        return False
     except Exception:
-        print("Orca Remote: %s" % text)
+        pass
+    controller = _remote_controller()
+    if controller is not None:
+        try:
+            controller.speak_message_internal(text)
+            return False
+        except Exception:
+            pass
+    print("Orca Remote: %s" % text)
     return False
 
 # ---- Remote Controller ----
@@ -247,6 +270,17 @@ def _local_only_stop():
     server = _get_speech_server()
     if server is not None:
         old_stop(server)
+        return
+    # Released Orca (51.1): no orca.speech module; interrupt through
+    # the remote controller instead (command name is build-specific).
+    controller = _remote_controller()
+    if controller is not None:
+        for name in ("InterruptSpeech", "interrupt_speech"):
+            try:
+                if controller.execute_command_internal("SpeechManager", name):
+                    return
+            except Exception:
+                pass
 
 def _local_only_speak(text):
     """Speak text locally via the speech server (no relay forwarding).
@@ -256,13 +290,22 @@ def _local_only_speak(text):
     server = _get_speech_server()
     if server is not None:
         old_speak(server, text, None)
-    else:
-        # Fallback if server not yet initialised
+        return
+    # Released Orca (51.1): no orca.speech module; speak through the
+    # remote controller instead.
+    controller = _remote_controller()
+    if controller is not None:
         try:
-            import orca.speech as speech
-            speech.speak(text)
+            controller.speak_message_internal(text)
+            return
         except Exception:
             pass
+    # Fallback if server not yet initialised
+    try:
+        import orca.speech as speech
+        speech.speak(text)
+    except Exception:
+        pass
 
 controller.local_machine._local_stop = _local_only_stop
 controller.local_machine._local_speak = _local_only_speak
